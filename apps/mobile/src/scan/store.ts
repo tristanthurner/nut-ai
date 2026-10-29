@@ -64,6 +64,8 @@ export type ScanPhase =
       failureKind?: ScanFailureKind | 'no-key'
       /** One link, when the failure has a next step (publik API's top_up_url). */
       action?: { label: string; url: string }
+      /** A scanned barcode nobody knows: offer to add it as a self-added product. */
+      addProductBarcode?: string
     }
 
 let phase: ScanPhase = { kind: 'idle' }

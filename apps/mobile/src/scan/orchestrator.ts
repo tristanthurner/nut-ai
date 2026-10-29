@@ -25,6 +25,8 @@ import { connectPublik, notePublikWallet, publikAvailable } from '../inference/p
 import { DISCONNECTED_MESSAGE, OWN_KEY_HINT } from '../inference/publik-copy'
 import { baseUrlOf, lookupOptionsOf, resolveInference, type ResolveFailure, type Resolved } from '../inference/resolve'
 import { applyWebOption, getPhase, setPhase, setWebLookup } from './store'
+import { normalizeGtin } from '@nutai/resolver'
+import { findUserFoodByBarcode } from '../data/repo'
 
 /**
  * The scan orchestrator — capture in, ready-to-review meal out.
@@ -422,16 +424,51 @@ interface BarcodeFoodRow {
  * falls to one web search when a key exists, and to a clear pointer at the
  * label scanner when it does not.
  */
-export async function startBarcodeScan(gtin: string): Promise<void> {
+export async function startBarcodeScan(rawCode: string): Promise<void> {
   setPhase({ kind: 'analyzing', photoUri: '', stage: 'matching' })
+
+  // The corpus stores canonical 13-digit GTINs; a raw EAN-8 or UPC-A scan has
+  // to be normalized first or it misses a row that is right there.
+  const gtin = normalizeGtin(rawCode) ?? rawCode
+  const unpadded = gtin.replace(/^0+/, '')
+
+  // The person's own products first: they added it precisely because the
+  // bundled data was missing or wrong for this package.
+  try {
+    const mine = await findUserFoodByBarcode(rawCode)
+    if (mine) {
+      readyFromRows(
+        [
+          {
+            id: `row_${Date.now()}`,
+            displayName: mine.name,
+            sourceFoodId: `user:${mine.id}`,
+            grams: mine.servingG ?? 100,
+            nutrientSnapshot: { ...mine.per100 },
+            origin: 'barcode',
+            gramPathway: 'packaged_exact',
+            bandHalfPct: 0.05,
+            isEstimate: false,
+            assumptions: [],
+          },
+        ],
+        null,
+        'barcode-user',
+        null,
+      )
+      return
+    }
+  } catch {
+    // Fall through to the corpus.
+  }
 
   let food: BarcodeFoodRow | null = null
   try {
     const ndb = await openNutritionDb()
     food = await ndb.get<BarcodeFoodRow>(
       `SELECT id, name, serving_size_g, energy_kcal, protein_g, fat_g, carb_g, fiber_g, sugar_g, sodium_mg
-       FROM foods WHERE barcode = ? LIMIT 1`,
-      [gtin],
+       FROM foods WHERE barcode = ? OR barcode = ? OR barcode = ? LIMIT 1`,
+      [gtin, unpadded, rawCode],
     )
   } catch {
     food = null
@@ -475,8 +512,9 @@ export async function startBarcodeScan(gtin: string): Promise<void> {
     setPhase({
       kind: 'failed',
       photoUri: '',
-      message: 'This barcode is not in the bundled database. The Food label mode reads the printed panel directly and works without a key.',
+      message: 'This barcode is not in the database yet. Add it as your own product — copy the values from the label once, and every later scan finds it.',
       canRetry: false,
+      addProductBarcode: gtin,
     })
     return
   }
@@ -494,8 +532,9 @@ export async function startBarcodeScan(gtin: string): Promise<void> {
     setPhase({
       kind: 'failed',
       photoUri: '',
-      message: 'Could not find this barcode in the database or online. Try the Food label mode — it reads the printed panel directly.',
+      message: 'Could not find this barcode in the database or online. Add it as your own product, or use the Food label mode to read the printed panel.',
       canRetry: false,
+      addProductBarcode: gtin,
     })
     return
   }
