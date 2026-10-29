@@ -14,6 +14,8 @@ import { ONBOARDING_DONE_KEY } from '../onboarding/done-key'
 import { EXPORT_TABLES, WIPE_ONLY_TABLES } from './backup-core'
 import { localDate, slotFor } from './date-utils'
 import * as dayLog from './day-log'
+import * as history from './history'
+import * as saved from './saved-meals'
 import { clearCredential } from '../inference/credentials'
 import { disconnectPublik } from '../inference/publik'
 import { openUserDb } from '../db/expo-adapter'
@@ -268,6 +270,42 @@ export async function setMealSlot(mealId: number, slot: dayLog.Slot): Promise<vo
 
 export async function removeItem(itemId: number): Promise<void> {
   return dayLog.deleteItem(await db(), itemId)
+}
+
+// ---------------------------------------------------------------------------
+// Saved meals and tracking history — wrappers over saved-meals.ts / history.ts
+// ---------------------------------------------------------------------------
+
+export type { SavedMeal, SavedMealItem, MealTotals } from './saved-meals'
+export type { TrackedFood } from './history'
+export { mealTotals } from './saved-meals'
+
+export async function savedMeals(): Promise<saved.SavedMeal[]> {
+  return saved.listSavedMeals(await db())
+}
+export async function savedMeal(id: number): Promise<saved.SavedMeal | null> {
+  return saved.getSavedMeal(await db(), id)
+}
+export async function createSavedMeal(name: string, items: saved.SavedMealItem[]): Promise<number> {
+  return saved.createSavedMeal(await db(), name, items, Date.now())
+}
+export async function updateSavedMeal(id: number, name: string, items: saved.SavedMealItem[]): Promise<void> {
+  return saved.updateSavedMeal(await db(), id, name, items)
+}
+export async function deleteSavedMeal(id: number): Promise<void> {
+  return saved.deleteSavedMeal(await db(), id)
+}
+export async function logSavedMeal(id: number, opts: { date?: string; slot?: string; scale?: number }): Promise<number> {
+  return saved.logSavedMeal(await db(), id, Date.now(), opts)
+}
+export async function savedItemsFromLoggedMeal(mealId: number): Promise<saved.SavedMealItem[]> {
+  return saved.savedItemsFromLoggedMeal(await db(), mealId)
+}
+export async function recentFoods(limit?: number): Promise<history.TrackedFood[]> {
+  return history.recentFoods(await db(), limit)
+}
+export async function frequentFoods(limit?: number): Promise<history.TrackedFood[]> {
+  return history.frequentFoods(await db(), limit)
 }
 
 // ---------------------------------------------------------------------------
