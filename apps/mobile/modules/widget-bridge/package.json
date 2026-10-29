@@ -1,0 +1,10 @@
+{
+  "name": "widget-bridge",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Hands today's totals to the Nut AI home screen widget through the shared App Group container.",
+  "license": "AGPL-3.0-or-later",
+  "author": "Nut AI",
+  "homepage": "https://github.com/Blueturboguy07/nut-ai",
+  "main": "index.ts"
+}
