@@ -11,6 +11,12 @@ const NAME = 'Nut AI'
 const SLUG = 'nut-ai'
 const BUNDLE_ID = 'com.nutai.app'
 const SCHEME = 'nutai'
+/**
+ * Shared with the home screen widget (targets/widget). Sideloading tools may
+ * register it under a different name; both sides resolve the real one at
+ * runtime (modules/widget-bridge), so this is the preferred name, not a promise.
+ */
+const APP_GROUP = `group.${BUNDLE_ID}`
 
 /**
  * Apple will not issue a HealthKit-capable provisioning profile to a free
@@ -60,6 +66,9 @@ const config: ExpoConfig = {
   ios: {
     bundleIdentifier: BUNDLE_ID,
     supportsTablet: false,
+    entitlements: {
+      'com.apple.security.application-groups': [APP_GROUP],
+    },
     infoPlist: {
       // Required by App Store review, and true: the app talks only to HTTPS
       // APIs (a vendor the user named, or publik API), which are exempt, so
@@ -69,6 +78,7 @@ const config: ExpoConfig = {
         'Nut AI uses your camera to photograph meals and scan barcodes. Photos stay on your device unless you choose a cloud provider during setup.',
       NSPhotoLibraryUsageDescription:
         'Nut AI can read a meal photo you already took. Photos stay on your device unless you choose a cloud provider during setup.',
+      NutAIAppGroup: APP_GROUP,
       NSFaceIDUsageDescription:
         'Nut AI uses Face ID only when you reveal or edit a stored API key — never to log a meal.',
     },
@@ -111,6 +121,8 @@ const config: ExpoConfig = {
     // Every builder signs with their own free Apple ID — see the plugin doc
     // comment for why this can only ever set the MODE (automatic), never a team.
     './plugins/withAutomaticSigning',
+    // The home screen widget target (targets/widget).
+    '@bacons/apple-targets',
   ],
 
   experiments: { typedRoutes: true },
