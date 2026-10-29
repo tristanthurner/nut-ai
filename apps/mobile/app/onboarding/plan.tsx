@@ -86,7 +86,7 @@ export default function PlanScreen() {
   const goalLine =
     derivedGoal === 'maintain'
       ? 'Goal: maintain your weight'
-      : `Goal: ${gaining ? 'gain' : 'lose'} ${plan.deltaLb.toFixed(0)} lbs by ${plan.dateLabel}`
+      : `Goal: ${gaining ? 'gain' : 'lose'} ${(plan.deltaLb / 2.20462).toFixed(1)} kg by ${plan.dateLabel}`
 
   const features = featureDefaultsFor(a.blocker)
   const diet = a.dietStyle ? DIET_BIAS[a.dietStyle] : null
@@ -110,7 +110,7 @@ export default function PlanScreen() {
 
         <View style={{ marginTop: space.xl }}>
           <ProgressChart
-            targetLabel={`${kgToLb(a.desiredWeightKg ?? a.weightKg ?? 80).toFixed(1)} lbs`}
+            targetLabel={`${(a.desiredWeightKg ?? a.weightKg ?? 80).toFixed(1)} kg`}
             dateLabel={derivedGoal === 'maintain' ? 'Ongoing' : plan.dateLabel}
             gaining={gaining}
           />
@@ -173,7 +173,7 @@ export default function PlanScreen() {
             />
             {derivedGoal !== 'maintain' ? (
               <MathRow
-                label={`${gaining ? '+' : '−'} ${plan.rate.toFixed(2)} lb/week`}
+                label={`${gaining ? '+' : '−'} ${(plan.rate / 2.20462).toFixed(2)} kg/week`}
                 value={`${gaining ? '+' : '−'}${Math.round((plan.rate * KCAL_PER_LB) / 7)} kcal`}
               />
             ) : null}
@@ -188,8 +188,8 @@ export default function PlanScreen() {
             Based on your inputs.
           </Text>
           <View style={[styles.mathCard, { backgroundColor: theme.bgElevated }]}>
-            <InfoRow icon="person" label="Starting weight" value={`${kgToLb(a.weightKg ?? 80).toFixed(1)} lbs`} />
-            <InfoRow icon="target" label="Goal weight" value={`${kgToLb(a.desiredWeightKg ?? a.weightKg ?? 80).toFixed(1)} lbs`} />
+            <InfoRow icon="person" label="Starting weight" value={`${(a.weightKg ?? 80).toFixed(1)} kg`} />
+            <InfoRow icon="target" label="Goal weight" value={`${(a.desiredWeightKg ?? a.weightKg ?? 80).toFixed(1)} kg`} />
             <InfoRow icon="steps" label="Activity level" value={activityFor(a.workoutsPerWeek)} />
             {diet ? <InfoRow icon="bowl" label="Diet" value={diet.label} /> : null}
           </View>
