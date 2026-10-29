@@ -106,3 +106,32 @@ export async function portionOptions(nutritionDb: DbAdapter, foodId: number, max
   }
   return out
 }
+
+/**
+ * A corpus row's own name and per-100 g values, by id. Used when re-opening a
+ * "Zuletzt getrackt" pasta or rice: the logged snapshot may already be
+ * converted to cooked weight, so the raw/cooked switch has to start from the
+ * product's real values, not from last time's converted ones.
+ */
+export async function corpusFood(
+  nutritionDb: DbAdapter,
+  foodId: number,
+): Promise<{ name: string; nutrientSnapshot: ManualFoodSelection['nutrientSnapshot'] } | null> {
+  const row = await nutritionDb.get<FoodRow & { name: string; energy_kcal: number | null }>(
+    'SELECT name, energy_kcal, protein_g, fat_g, carb_g, fiber_g, sugar_g, sodium_mg FROM foods WHERE id = ?',
+    [foodId],
+  )
+  if (!row) return null
+  return {
+    name: row.name,
+    nutrientSnapshot: {
+      kcal: row.energy_kcal ?? 0,
+      protein_g: row.protein_g ?? 0,
+      fat_g: row.fat_g ?? 0,
+      carbs_g: row.carb_g ?? 0,
+      fiber_g: row.fiber_g ?? null,
+      sugar_g: row.sugar_g ?? null,
+      sodium_mg: row.sodium_mg ?? null,
+    },
+  }
+}
