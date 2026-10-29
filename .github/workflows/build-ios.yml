@@ -1,0 +1,80 @@
+# Baut Nut AI als UNSIGNIERTE .ipa auf einem macOS-Server von GitHub.
+# Signiert und installiert wird danach unter Windows mit Sideloadly (oder SideStore).
+#
+# Ablage im eigenen Fork: .github/workflows/build-ios.yml
+# Start: Tab "Actions" -> "Build iOS IPA" -> "Run workflow"
+# Ergebnis: unten im fertigen Lauf unter "Artifacts" -> NutAI-unsigned-ipa
+
+name: Build iOS IPA
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 90
+    steps:
+      - name: Code holen
+        uses: actions/checkout@v4
+
+      - name: Node einrichten
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Neuestes Xcode 26 auswaehlen
+        run: |
+          XCODE=$(ls -d /Applications/Xcode_26*.app | sort -V | tail -1)
+          echo "Verwende $XCODE"
+          sudo xcode-select -s "$XCODE"
+          xcodebuild -version
+
+      - name: Abhaengigkeiten installieren
+        run: npm ci
+
+      - name: Naehrwert-Datenbank bauen (USDA)
+        run: npm run data:build
+
+      - name: iOS-Projekt erzeugen
+        working-directory: apps/mobile
+        env:
+          CI: "1"
+        run: |
+          npx expo prebuild --platform ios --clean
+          node scripts/use-release-scheme.mjs
+
+      - name: App bauen (ohne Signatur)
+        working-directory: apps/mobile/ios
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -workspace NutAI.xcworkspace \
+            -scheme NutAI \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build > xcodebuild.log 2>&1 || { tail -150 xcodebuild.log; exit 1; }
+          tail -20 xcodebuild.log
+
+      - name: IPA verpacken
+        working-directory: apps/mobile/ios
+        run: |
+          APP=$(ls -d build/Build/Products/Release-iphoneos/*.app | head -1)
+          echo "Gefunden: $APP"
+          rm -rf Payload && mkdir Payload
+          cp -R "$APP" Payload/
+          zip -qry NutAI-unsigned.ipa Payload
+          ls -lh NutAI-unsigned.ipa
+
+      - name: IPA hochladen
+        uses: actions/upload-artifact@v4
+        with:
+          name: NutAI-unsigned-ipa
+          path: apps/mobile/ios/NutAI-unsigned.ipa
+          retention-days: 30
