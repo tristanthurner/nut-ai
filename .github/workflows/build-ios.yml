@@ -37,6 +37,13 @@ jobs:
       - name: Naehrwert-Datenbank bauen (USDA)
         run: npm run data:build
 
+      - name: Oesterreichische Produkte hinzufuegen (Open Food Facts)
+        run: npm run data:build:at
+
+      - name: Datenbank pruefen (nur Info)
+        continue-on-error: true
+        run: npm run data:verify
+
       - name: iOS-Projekt erzeugen
         working-directory: apps/mobile
         env:
