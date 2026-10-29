@@ -14,6 +14,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { isValidGrams, SLOT_ORDER, type Slot } from '../data/day-log'
 import type { PortionOption } from '../data/food-search-select'
+import { clampFactor, convertGrams, per100Multiplier, type CookPref, type CookState } from '../data/cooking'
 import { useTheme } from '../theme/ThemeProvider'
 import { MIN_TAP_TARGET, radius, space, type } from '../theme/tokens'
 
@@ -43,10 +44,16 @@ interface Props {
   confirmLabel: string
   /** The meal's portion_eaten_fraction, so the preview matches the day list exactly. */
   eatenFraction?: number
-  onConfirm: (grams: number, slot: Slot | undefined) => Promise<void> | void
+  /** `cook` is set when the raw/cooked switch was shown: how the grams were weighed. */
+  onConfirm: (grams: number, slot: Slot | undefined, cook?: CookPref) => Promise<void> | void
   onDelete?: () => Promise<void> | void
   /** An optional secondary action under the main button, e.g. "Save meal as favourite". */
   extraAction?: { label: string; onPress: () => void }
+  /**
+   * Pasta, rice & co.: offer "Gewogen: roh | gekocht". `basis` is the state
+   * the per100 values refer to; `weighed`/`factor` the starting position.
+   */
+  cook?: { basis: CookState; weighed: CookState; factor: number }
   onClose: () => void
 }
 
@@ -69,7 +76,7 @@ function fmt(n: number, digits = 0): string {
  */
 export function GramEditor({
   visible, title, subtitle, per100, initialGrams, portions = [], initialSlot,
-  confirmLabel, eatenFraction = 1, onConfirm, onDelete, extraAction, onClose,
+  confirmLabel, eatenFraction = 1, onConfirm, onDelete, extraAction, cook, onClose,
 }: Props) {
   const theme = useTheme()
   const insets = useSafeAreaInsets()
@@ -77,6 +84,8 @@ export function GramEditor({
   const [slot, setSlot] = useState<Slot | undefined>(initialSlot)
   const [busy, setBusy] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
+  const [weighed, setWeighed] = useState<CookState>(cook?.weighed ?? 'raw')
+  const [factor, setFactor] = useState(clampFactor(cook?.factor ?? 2.5))
 
   // Re-seed whenever the sheet opens for a different food or entry.
   useEffect(() => {
@@ -85,18 +94,43 @@ export function GramEditor({
       setSlot(initialSlot)
       setBusy(false)
       setConfirmDelete(false)
+      setWeighed(cook?.weighed ?? 'raw')
+      setFactor(clampFactor(cook?.factor ?? 2.5))
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible, initialGrams, initialSlot, title])
+
+  // The values for what is on the scale: dry pasta's per-100 g turned into
+  // cooked pasta's when it is weighed cooked, and the other way round.
+  const m = cook ? per100Multiplier(cook.basis, weighed, factor) : 1
+  const eff = { kcal: per100.kcal * m, protein_g: per100.protein_g * m, carbs_g: per100.carbs_g * m, fat_g: per100.fat_g * m }
+
+  function switchWeighed(next: CookState) {
+    if (next === weighed) return
+    const g = parseGrams(text)
+    // Same food, other state: 100 g dry becomes ~240 g cooked, same kcal.
+    if (isValidGrams(g)) setText(fmt(convertGrams(g, weighed, next, factor), 0))
+    setWeighed(next)
+  }
+
+  function nudgeFactor(delta: number) {
+    setFactor((f) => clampFactor(f + delta))
+  }
 
   const grams = parseGrams(text)
   const valid = isValidGrams(grams)
   const k = valid ? (grams / 100) * eatenFraction : 0
 
   const chips = useMemo(() => {
-    const all = [...portions]
+    // Recorded portions are in the product's own state (a serving of DRY pasta).
+    const all = portions.map((p) =>
+      cook && cook.basis !== weighed
+        ? { ...p, grams: Math.round(convertGrams(p.grams, cook.basis, weighed, factor)) }
+        : p,
+    )
     if (!all.some((p) => p.grams === 100)) all.push({ label: '100 g', grams: 100 })
     return all
-  }, [portions])
+  }, [portions, cook, weighed, factor])
 
   function nudge(delta: number) {
     const base = valid ? grams : 0
@@ -108,7 +142,7 @@ export function GramEditor({
     if (!valid || busy) return
     setBusy(true)
     try {
-      await onConfirm(Math.round(grams * 10) / 10, slot)
+      await onConfirm(Math.round(grams * 10) / 10, slot, cook ? { weighed, factor } : undefined)
     } finally {
       setBusy(false)
     }
@@ -145,8 +179,50 @@ export function GramEditor({
               <Text style={[type.caption, { color: theme.textMuted, marginTop: 2 }]} numberOfLines={1}>{subtitle}</Text>
             ) : null}
             <Text style={[type.caption, { color: theme.textFaint, marginTop: space.xs }]}>
-              {fmt(per100.kcal)} kcal per 100 g
+              {fmt(eff.kcal)} kcal per 100 g{cook ? (weighed === 'cooked' ? ' gekocht' : ' roh') : ''}
             </Text>
+
+            {cook ? (
+              <View style={[styles.cookBox, { backgroundColor: theme.bgSunken }]}>
+                <View style={styles.cookRow}>
+                  <Text style={[type.label, { color: theme.textMuted }]}>Gewogen</Text>
+                  <View style={[styles.segment, { borderColor: theme.border }]}>
+                    {(['raw', 'cooked'] as const).map((s) => (
+                      <Pressable
+                        key={s}
+                        onPress={() => switchWeighed(s)}
+                        accessibilityRole="button"
+                        accessibilityState={{ selected: weighed === s }}
+                        style={[styles.segBtn, weighed === s && { backgroundColor: theme.text }]}
+                      >
+                        <Text style={[type.label, { color: weighed === s ? theme.bg : theme.text }]}>
+                          {s === 'raw' ? 'Roh' : 'Gekocht'}
+                        </Text>
+                      </Pressable>
+                    ))}
+                  </View>
+                </View>
+                <View style={[styles.cookRow, { marginTop: space.sm }]}>
+                  <Text style={[type.caption, { color: theme.textMuted, flex: 1 }]}>
+                    100 g roh ≈ {fmt(100 * factor)} g gekocht
+                  </Text>
+                  <Pressable onPress={() => nudgeFactor(-0.1)} accessibilityLabel="Faktor kleiner" style={[styles.miniBtn, { borderColor: theme.border }]}>
+                    <Text style={[type.bodyStrong, { color: theme.text }]}>−</Text>
+                  </Pressable>
+                  <Text style={[type.bodyStrong, { color: theme.text, minWidth: 40, textAlign: 'center' }]}>
+                    ×{fmt(factor, 1).replace('.', ',')}
+                  </Text>
+                  <Pressable onPress={() => nudgeFactor(0.1)} accessibilityLabel="Faktor größer" style={[styles.miniBtn, { borderColor: theme.border }]}>
+                    <Text style={[type.bodyStrong, { color: theme.text }]}>+</Text>
+                  </Pressable>
+                </View>
+                {cook.basis !== weighed ? (
+                  <Text style={[type.micro, { color: theme.textFaint, marginTop: space.xs }]}>
+                    Die Nährwerte des Produkts gelten {cook.basis === 'raw' ? 'roh' : 'gekocht'} — umgerechnet mit diesem Faktor.
+                  </Text>
+                ) : null}
+              </View>
+            ) : null}
 
             {/* Amount */}
             <View style={styles.amountRow}>
@@ -202,12 +278,12 @@ export function GramEditor({
             {/* Live numbers */}
             <View style={[styles.preview, { backgroundColor: theme.bgSunken }]}>
               <View>
-                <Text style={[styles.kcal, { color: theme.text }]}>{valid ? fmt(per100.kcal * k) : '–'}</Text>
+                <Text style={[styles.kcal, { color: theme.text }]}>{valid ? fmt(eff.kcal * k) : '–'}</Text>
                 <Text style={[type.caption, { color: theme.textMuted }]}>kcal</Text>
               </View>
-              <Macro label="Protein" value={per100.protein_g * k} color={theme.protein} show={valid} />
-              <Macro label="Carbs" value={per100.carbs_g * k} color={theme.carbs} show={valid} />
-              <Macro label="Fat" value={per100.fat_g * k} color={theme.fat} show={valid} />
+              <Macro label="Protein" value={eff.protein_g * k} color={theme.protein} show={valid} />
+              <Macro label="Carbs" value={eff.carbs_g * k} color={theme.carbs} show={valid} />
+              <Macro label="Fat" value={eff.fat_g * k} color={theme.fat} show={valid} />
             </View>
             {eatenFraction !== 1 ? (
               <Text style={[type.micro, { color: theme.textFaint, marginTop: space.xs }]}>
@@ -315,6 +391,14 @@ const styles = StyleSheet.create({
   preview: {
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
     padding: space.lg, borderRadius: radius.lg, marginTop: space.lg,
+  },
+  cookBox: { borderRadius: radius.lg, padding: space.md, marginTop: space.md },
+  cookRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: space.sm },
+  segment: { flexDirection: 'row', borderWidth: StyleSheet.hairlineWidth, borderRadius: radius.pill, padding: 2 },
+  segBtn: { paddingHorizontal: space.lg, minHeight: 34, borderRadius: radius.pill, alignItems: 'center', justifyContent: 'center' },
+  miniBtn: {
+    width: 34, height: 34, borderRadius: radius.pill, borderWidth: StyleSheet.hairlineWidth,
+    alignItems: 'center', justifyContent: 'center',
   },
   kcal: { fontSize: 28, fontWeight: '800', letterSpacing: -0.8 },
   primary: {
