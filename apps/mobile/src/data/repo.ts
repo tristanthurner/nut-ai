@@ -17,6 +17,7 @@ import * as dayLog from './day-log'
 import * as history from './history'
 import * as saved from './saved-meals'
 import * as userFoods from './user-foods'
+import * as water from './water'
 import { clearCredential } from '../inference/credentials'
 import { disconnectPublik } from '../inference/publik'
 import { openUserDb } from '../db/expo-adapter'
@@ -332,6 +333,17 @@ export async function logUserFood(
   opts: { date?: string; slot?: string },
 ): Promise<number> {
   return userFoods.logUserFood(await db(), food, grams, Date.now(), opts)
+}
+
+export { WATER_GOAL_ML } from './water'
+export async function addWater(date: string, ml: number): Promise<void> {
+  return water.addWater(await db(), date, ml, Date.now())
+}
+export async function waterTotal(date: string): Promise<number> {
+  return water.waterTotal(await db(), date)
+}
+export async function undoLastWater(date: string): Promise<number> {
+  return water.undoLastWater(await db(), date)
 }
 
 export async function recentFoods(limit?: number): Promise<history.TrackedFood[]> {
