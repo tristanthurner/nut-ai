@@ -3,7 +3,10 @@
 #
 # Ablage im eigenen Fork: .github/workflows/build-ios.yml
 # Start: Tab "Actions" -> "Build iOS IPA" -> "Run workflow"
-# Ergebnis: unten im fertigen Lauf unter "Artifacts" -> NutAI-unsigned-ipa
+# Ergebnis: unten im fertigen Lauf unter "Artifacts" -> NutAI-ipa
+#   NutAI.ipa              mit Homescreen-Widget (App Group, ad-hoc vorsigniert)
+#   NutAI-ohne-Widget.ipa  ohne Widget-Erweiterung, falls das Sideloading-Tool
+#                          App Groups mit einer kostenlosen Apple-ID ablehnt
 
 name: Build iOS IPA
 
@@ -33,6 +36,9 @@ jobs:
 
       - name: Abhaengigkeiten installieren
         run: npm ci
+
+      - name: Tests (App-Datenlogik)
+        run: npx vitest run apps/mobile/src packages/db-adapter
 
       - name: Naehrwert-Datenbank bauen (USDA)
         run: npm run data:build
@@ -72,16 +78,52 @@ jobs:
       - name: IPA verpacken
         working-directory: apps/mobile/ios
         run: |
+          set -e
           APP=$(ls -d build/Build/Products/Release-iphoneos/*.app | head -1)
           echo "Gefunden: $APP"
+          ls "$APP/PlugIns" || true
+
+          # Entitlements as the sideloading tool should register them. Push
+          # (aps-environment) is deliberately absent: reminders are LOCAL
+          # notifications, and a free Apple ID cannot sign push anyway.
+          GROUP=$(/usr/libexec/PlistBuddy -c 'Print :NutAIAppGroup' "$APP/Info.plist")
+          cat > app.entitlements <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>com.apple.security.application-groups</key><array><string>${GROUP}</string></array>
+          </dict></plist>
+          PLIST
+          sed -i '' 's/^          //' app.entitlements
+          cat app.entitlements
+
+          # --- Variant 1: with widget, ad-hoc pre-signed so the entitlements travel inside the binaries.
           rm -rf Payload && mkdir Payload
           cp -R "$APP" Payload/
-          zip -qry NutAI-unsigned.ipa Payload
-          ls -lh NutAI-unsigned.ipa
+          A="Payload/$(basename "$APP")"
+          find "$A/Frameworks" -maxdepth 1 \( -name '*.framework' -o -name '*.dylib' \) -print0 2>/dev/null | \
+            xargs -0 -I{} codesign --force --sign - --timestamp=none "{}" || true
+          for X in "$A"/PlugIns/*.appex; do
+            [ -d "$X" ] || continue
+            codesign --force --sign - --timestamp=none --entitlements app.entitlements "$X"
+          done
+          codesign --force --sign - --timestamp=none --entitlements app.entitlements "$A"
+          codesign -d --entitlements :- "$A" 2>/dev/null | head -20 || true
+          zip -qry NutAI.ipa Payload
+
+          # --- Variant 2: no widget extension, unsigned (exactly like earlier builds).
+          rm -rf Payload && mkdir Payload
+          cp -R "$APP" Payload/
+          rm -rf "Payload/$(basename "$APP")/PlugIns"
+          zip -qry NutAI-ohne-Widget.ipa Payload
+
+          ls -lh NutAI.ipa NutAI-ohne-Widget.ipa
 
       - name: IPA hochladen
         uses: actions/upload-artifact@v4
         with:
-          name: NutAI-unsigned-ipa
-          path: apps/mobile/ios/NutAI-unsigned.ipa
+          name: NutAI-ipa
+          path: |
+            apps/mobile/ios/NutAI.ipa
+            apps/mobile/ios/NutAI-ohne-Widget.ipa
           retention-days: 30
