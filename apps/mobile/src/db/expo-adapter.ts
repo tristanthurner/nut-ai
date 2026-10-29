@@ -70,22 +70,42 @@ export async function openUserDb(): Promise<DbAdapter> {
  */
 let nutritionImported = false
 
+/**
+ * The on-device file name of the imported corpus. BUMP IT whenever the bundled
+ * nutrition.db changes: the import below is idempotent by name, so an app
+ * update (or a sideload over an existing install) would otherwise keep serving
+ * the corpus copied by the very first launch.
+ *
+ * 'at1' = USDA generic tier + Open Food Facts products sold in Austria.
+ */
+const CORPUS_DB_NAME = 'nutrition-at1.db'
+const RETIRED_CORPUS_DB_NAMES = ['nutrition.db']
+
 export async function openNutritionDb(): Promise<DbAdapter> {
   if (!nutritionImported) {
     try {
-      await SQLite.importDatabaseFromAssetAsync('nutrition.db', {
+      await SQLite.importDatabaseFromAssetAsync(CORPUS_DB_NAME, {
         assetId: require('../../assets/nutrition.db'),
-        // Idempotent by name. Re-copying 4.7 MB on every cold start would be a
-        // visible delay for nothing.
+        // Idempotent by name. Re-copying the corpus on every cold start would
+        // be a visible delay for nothing.
         forceOverwrite: false,
       })
     } catch {
       // Already imported by a previous launch — the common path.
     }
+    // Older corpus copies are dead weight once the current one is in place.
+    // The user's own data lives in user.db and is never touched here.
+    for (const name of RETIRED_CORPUS_DB_NAMES) {
+      try {
+        await SQLite.deleteDatabaseAsync(name)
+      } catch {
+        // Not present (fresh install) — nothing to clean up.
+      }
+    }
     nutritionImported = true
   }
 
-  const db = await SQLite.openDatabaseAsync('nutrition.db')
+  const db = await SQLite.openDatabaseAsync(CORPUS_DB_NAME)
   return new ExpoDbAdapter(db)
 }
 
