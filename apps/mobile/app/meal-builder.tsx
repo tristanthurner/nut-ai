@@ -5,10 +5,13 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import type { DbAdapter } from '@nutai/db-adapter'
 import { resolveByText, type ScoredCandidate } from '@nutai/resolver'
 import { openNutritionDb } from '../src/db/expo-adapter'
-import { portionOptions, resolveSelection, type PortionOption } from '../src/data/food-search-select'
+import { corpusFood, portionOptions, resolveSelection, type PortionOption } from '../src/data/food-search-select'
+import { applyCook, cookContextFor, cookKindFor, saveCookPref, stripWeighedSuffix, type CookContext, type CookPref } from '../src/data/cooking'
 import {
   createSavedMeal,
+  db as userDbHandle,
   deleteSavedMeal,
+  getUserFood,
   mealTotals,
   recentFoods,
   savedItemsFromLoggedMeal,
@@ -37,6 +40,16 @@ interface Pending {
   item: SavedMealItem
   portions: PortionOption[]
   brand?: string | null
+  /** Pasta, rice & co. being added: the raw/cooked switch. */
+  cook?: CookContext | null
+}
+
+async function cookFor(name: string, source: 'corpus' | 'user', id: number): Promise<CookContext | null> {
+  try {
+    return await cookContextFor(await userDbHandle(), name, source, id)
+  } catch {
+    return null
+  }
 }
 
 export default function MealBuilder() {
@@ -105,9 +118,11 @@ export default function MealBuilder() {
 
   const totals = useMemo(() => mealTotals(items), [items])
 
-  function pickUserFood(f: UserFood) {
+  async function pickUserFood(f: UserFood) {
+    const cook = await cookFor(f.name, 'user', f.id)
     setPending({
       index: null,
+      cook,
       brand: f.brand,
       portions: f.servingG != null ? [{ label: '1 portion', grams: f.servingG }] : [],
       item: { foodId: f.id, source: 'user', name: f.name, grams: f.servingG ?? 100, per100: f.per100 },
@@ -116,10 +131,15 @@ export default function MealBuilder() {
 
   async function pickCandidate(c: ScoredCandidate) {
     if (!nutritionDb) return
-    const [sel, portions] = await Promise.all([resolveSelection(nutritionDb, c), portionOptions(nutritionDb, Number(c.foodId))])
+    const [sel, portions, cook] = await Promise.all([
+      resolveSelection(nutritionDb, c),
+      portionOptions(nutritionDb, Number(c.foodId)),
+      cookFor(c.name, 'corpus', Number(c.foodId)),
+    ])
     const n = sel.nutrientSnapshot
     setPending({
       index: null,
+      cook,
       brand: c.brand,
       portions,
       item: {
@@ -136,6 +156,42 @@ export default function MealBuilder() {
 
   async function pickRecent(f: TrackedFood) {
     const portions = nutritionDb && f.source === 'corpus' ? await portionOptions(nutritionDb, f.foodId) : []
+    // Pasta & rice: start from the product's real values, not last time's
+    // possibly cooked-converted snapshot.
+    if (cookKindFor(stripWeighedSuffix(f.name))) {
+      if (f.source === 'user') {
+        const uf = await getUserFood(f.foodId)
+        if (uf) {
+          setPending({
+            index: null,
+            portions: uf.servingG != null ? [{ label: '1 portion', grams: uf.servingG }] : [],
+            cook: await cookFor(uf.name, 'user', uf.id),
+            item: { foodId: uf.id, source: 'user', name: uf.name, grams: f.lastGrams, per100: uf.per100 },
+          })
+          return
+        }
+      } else if (nutritionDb) {
+        const base = await corpusFood(nutritionDb, f.foodId)
+        if (base) {
+          const n = base.nutrientSnapshot
+          setPending({
+            index: null,
+            portions,
+            cook: await cookFor(base.name, 'corpus', f.foodId),
+            item: {
+              foodId: f.foodId,
+              name: base.name,
+              grams: f.lastGrams,
+              per100: {
+                kcal: n.kcal, protein_g: n.protein_g, fat_g: n.fat_g, carbs_g: n.carbs_g,
+                fiber_g: n.fiber_g ?? null, sugar_g: n.sugar_g ?? null, sodium_mg: n.sodium_mg ?? null,
+              },
+            },
+          })
+          return
+        }
+      }
+    }
     setPending({
       index: null,
       portions,
@@ -150,9 +206,15 @@ export default function MealBuilder() {
     setPending({ index, item: it, portions })
   }
 
-  function commitPending(grams: number) {
+  function commitPending(grams: number, cookPref?: CookPref) {
     if (!pending) return
-    const next = { ...pending.item, grams }
+    let next = { ...pending.item, grams }
+    if (pending.cook && cookPref) {
+      const c = applyCook(pending.item.per100, pending.item.name, pending.cook, cookPref)
+      next = { ...next, name: c.name, per100: c.per100 }
+      const cook = pending.cook
+      void userDbHandle().then((h) => saveCookPref(h, cook, cookPref)).catch(() => {})
+    }
     setItems((prev) => {
       if (pending.index == null) return [...prev, next]
       return prev.map((x, i) => (i === pending.index ? next : x))
@@ -278,7 +340,7 @@ export default function MealBuilder() {
           ? mineResults.map((f) => (
               <Pressable
                 key={`u${f.id}`}
-                onPress={() => pickUserFood(f)}
+                onPress={() => void pickUserFood(f)}
                 accessibilityRole="button"
                 style={[styles.result, { borderBottomColor: theme.border }]}
               >
@@ -353,7 +415,8 @@ export default function MealBuilder() {
           initialGrams={pending.item.grams}
           portions={pending.portions}
           confirmLabel={pending.index == null ? 'Add to meal' : 'Save'}
-          onConfirm={(g) => commitPending(g)}
+          onConfirm={(g, _slot, cookPref) => commitPending(g, cookPref)}
+          cook={pending.cook ? { basis: pending.cook.basis, weighed: pending.cook.weighed, factor: pending.cook.factor } : undefined}
           onDelete={pending.index != null ? removePending : undefined}
           onClose={() => setPending(null)}
         />

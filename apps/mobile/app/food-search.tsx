@@ -21,7 +21,8 @@ import {
   type UserFood,
 } from '../src/data/repo'
 import { MealLogSheet } from '../src/components/MealLogSheet'
-import { portionOptions, resolveSelection, type PortionOption } from '../src/data/food-search-select'
+import { corpusFood, portionOptions, resolveSelection, type PortionOption } from '../src/data/food-search-select'
+import { applyCook, cookContextFor, cookKindFor, saveCookPref, stripWeighedSuffix, type CookContext, type CookPref } from '../src/data/cooking'
 import { logManualFood, type ManualFoodSelection } from '../src/data/manual-food'
 import { localDate, slotFor } from '../src/data/date-utils'
 import type { Slot } from '../src/data/day-log'
@@ -44,6 +45,16 @@ interface Draft {
   portions: PortionOption[]
   /** Set when the food is a self-added product: logs as source 'user'. */
   userFood?: UserFood
+  /** Pasta, rice & co.: the raw/cooked switch and where its choice is remembered. */
+  cook?: CookContext | null
+}
+
+async function cookFor(name: string, source: 'corpus' | 'user', id: number): Promise<CookContext | null> {
+  try {
+    return await cookContextFor(await userDbHandle(), name, source, id)
+  } catch {
+    return null
+  }
 }
 
 type Tab = 'recent' | 'frequent' | 'user'
@@ -184,11 +195,12 @@ export default function FoodSearch() {
     setSelectingId(candidate.foodId)
     setError(null)
     try {
-      const [selection, portions] = await Promise.all([
+      const [selection, portions, cook] = await Promise.all([
         resolveSelection(db, candidate),
         portionOptions(db, Number(candidate.foodId)),
+        cookFor(candidate.name, 'corpus', Number(candidate.foodId)),
       ])
-      setDraft({ title: candidate.name, subtitle: candidate.brand, selection, portions })
+      setDraft({ title: candidate.name, subtitle: candidate.brand, selection, portions, cook })
     } catch {
       setError('Could not open that food — try again.')
     } finally {
@@ -196,9 +208,11 @@ export default function FoodSearch() {
     }
   }
 
-  function handleUserFood(f: UserFood, grams?: number, subtitle?: string) {
+  async function handleUserFood(f: UserFood, grams?: number, subtitle?: string, withCook = true) {
     setError(null)
+    const cook = withCook ? await cookFor(f.name, 'user', f.id) : null
     setDraft({
+      cook,
       title: f.name,
       subtitle: subtitle ?? ['Selbst hinzugefügt', f.brand].filter(Boolean).join(' · '),
       portions: userFoodPortions(f),
@@ -212,16 +226,33 @@ export default function FoodSearch() {
     const subtitle = f.count > 1 ? `Logged ${f.count}× · last time ${Math.round(f.lastGrams)} g` : `Last time ${Math.round(f.lastGrams)} g`
     if (f.source === 'user') {
       const uf = await getUserFood(f.foodId)
-      if (uf) { handleUserFood(uf, f.lastGrams, subtitle); return }
+      if (uf) { await handleUserFood(uf, f.lastGrams, subtitle); return }
       // Deleted since: log it once more with the numbers it was logged with.
-      handleUserFood(
+      await handleUserFood(
         { id: f.foodId, name: f.name, brand: null, barcode: null, servingG: null, per100: f.per100, createdAt: 0 },
         f.lastGrams,
         subtitle,
+        false,
       )
       return
     }
     const portions = db ? await portionOptions(db, f.foodId) : []
+    // Pasta & rice: start from the product's own values — last time's snapshot
+    // may already be converted to cooked weight.
+    if (db && cookKindFor(stripWeighedSuffix(f.name))) {
+      const base = await corpusFood(db, f.foodId)
+      const cook = base ? await cookFor(base.name, 'corpus', f.foodId) : null
+      if (base && cook) {
+        setDraft({
+          title: base.name,
+          subtitle,
+          portions,
+          cook,
+          selection: { foodId: f.foodId, displayName: base.name, grams: f.lastGrams, nutrientSnapshot: base.nutrientSnapshot },
+        })
+        return
+      }
+    }
     setDraft({
       title: f.name,
       subtitle,
@@ -243,14 +274,25 @@ export default function FoodSearch() {
     })
   }
 
-  async function confirmDraft(grams: number, slot: Slot | undefined) {
+  async function confirmDraft(grams: number, slot: Slot | undefined, cookPref?: CookPref) {
     if (!draft) return
     try {
+      const cook = draft.cook && cookPref ? draft.cook : null
+      if (cook && cookPref) await saveCookPref(await userDbHandle(), cook, cookPref).catch(() => {})
       if (draft.userFood) {
-        await logUserFood(draft.userFood, grams, { date: targetDate, slot: slot ?? defaultSlot })
+        const food = cook && cookPref
+          ? (() => {
+              const c = applyCook(draft.userFood.per100, draft.userFood.name, cook, cookPref)
+              return { ...draft.userFood, name: c.name, per100: c.per100 }
+            })()
+          : draft.userFood
+        await logUserFood(food, grams, { date: targetDate, slot: slot ?? defaultSlot })
       } else {
         const userDb = await userDbHandle()
-        await logManualFood(userDb, { ...draft.selection, grams }, Date.now(), {
+        const c = cook && cookPref
+          ? applyCook(draft.selection.nutrientSnapshot, draft.selection.displayName, cook, cookPref)
+          : { per100: draft.selection.nutrientSnapshot, name: draft.selection.displayName }
+        await logManualFood(userDb, { ...draft.selection, displayName: c.name, nutrientSnapshot: c.per100, grams }, Date.now(), {
           date: targetDate,
           slot: slot ?? defaultSlot,
           gramsUserSet: true,
@@ -314,7 +356,7 @@ export default function FoodSearch() {
       )}
 
       {mineResults.map((f) => (
-        <UserFoodRow key={`u${f.id}`} food={f} onPress={() => handleUserFood(f)} />
+        <UserFoodRow key={`u${f.id}`} food={f} onPress={() => void handleUserFood(f)} />
       ))}
 
       {results.map((r) => (
@@ -446,7 +488,7 @@ export default function FoodSearch() {
                   Products you add yourself appear here. Give one a barcode and scanning it finds it from then on.
                 </Text>
               ) : (
-                mine.map((f) => <UserFoodRow key={`m${f.id}`} food={f} onPress={() => handleUserFood(f)} />)
+                mine.map((f) => <UserFoodRow key={`m${f.id}`} food={f} onPress={() => void handleUserFood(f)} />)
               )}
             </>
           ) : null}
@@ -490,6 +532,7 @@ export default function FoodSearch() {
           initialSlot={defaultSlot}
           confirmLabel="Add to log"
           onConfirm={confirmDraft}
+          cook={draft.cook ? { basis: draft.cook.basis, weighed: draft.cook.weighed, factor: draft.cook.factor } : undefined}
           extraAction={
             draft.userFood && draft.userFood.createdAt > 0
               ? {

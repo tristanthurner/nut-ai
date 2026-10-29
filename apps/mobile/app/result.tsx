@@ -18,7 +18,16 @@ import type { WebLookupResult } from '@nutai/core-schema'
 import { healthScore } from '@nutai/totals'
 import { ConfidenceChip, ConfidenceReasons } from '../src/components/ConfidenceChip'
 import { Icon, type IconName } from '../src/components/Icon'
-import { logMeal } from '../src/data/repo'
+import { db as userDbHandle, logMeal } from '../src/data/repo'
+import {
+  applyCook,
+  clampFactor,
+  convertGrams,
+  cookContextFor,
+  saveCookPref,
+  type CookContext,
+  type CookState,
+} from '../src/data/cooking'
 import { fixScan, lookupOther, retryScan } from '../src/scan/orchestrator'
 import {
   answerQuestion,
@@ -26,6 +35,7 @@ import {
   editGrams,
   removeRow,
   reset,
+  setRowWeighing,
   useScan,
   type WebLookupState,
 } from '../src/scan/store'
@@ -76,6 +86,55 @@ export default function Result() {
       ],
     )
   }, [unknownBarcode])
+
+  // Scanned pasta / rice pack: "Gewogen: roh | gekocht". `base` keeps the
+  // product's own values so switching back and forth never compounds.
+  type Snapshot = { kcal: number; protein_g: number; fat_g: number; carbs_g: number; fiber_g?: number | null; sugar_g?: number | null; sodium_mg?: number | null }
+  interface CookRow { ctx: CookContext; baseName: string; base: Snapshot; weighed: CookState; factor: number }
+  const [cookRows, setCookRows] = useState<Record<string, CookRow>>({})
+  const [gramsEpoch, setGramsEpoch] = useState(0)
+  const cookChecked = useRef(new Set<string>())
+  const readyRows = phase.kind === 'ready' ? phase.result.meal.ingredients : null
+
+  function applyCookRow(rowId: string, st: CookRow, weighed: CookState, factor: number, grams: number) {
+    const f = clampFactor(factor)
+    const nextGrams = weighed === st.weighed ? grams : Math.round(convertGrams(grams, st.weighed, weighed, st.factor))
+    const c = applyCook(st.base, st.baseName, st.ctx, { weighed, factor: f })
+    setRowWeighing(rowId, {
+      displayName: c.name,
+      nutrientSnapshot: c.per100 as never,
+      grams: nextGrams,
+    })
+    setCookRows((prev) => ({ ...prev, [rowId]: { ...st, weighed, factor: f } }))
+    setGramsEpoch((e) => e + 1)
+  }
+
+  useEffect(() => {
+    if (!readyRows) return
+    for (const row of readyRows) {
+      if (row.origin !== 'barcode' || !row.sourceFoodId || cookChecked.current.has(row.id)) continue
+      cookChecked.current.add(row.id)
+      const sid = String(row.sourceFoodId)
+      const source = sid.startsWith('user:') ? 'user' as const : 'corpus' as const
+      const id = Number(source === 'user' ? sid.slice(5) : sid)
+      if (!Number.isFinite(id)) continue
+      const base = { ...row.nutrientSnapshot }
+      const baseName = row.displayName
+      void (async () => {
+        try {
+          const ctx = await cookContextFor(await userDbHandle(), baseName, source, id)
+          if (!ctx) return
+          const st: CookRow = { ctx, baseName, base, weighed: ctx.basis, factor: ctx.factor }
+          setCookRows((prev) => ({ ...prev, [row.id]: st }))
+          // Weighed cooked last time: start there (the pack's serving converted).
+          if (ctx.weighed !== ctx.basis) applyCookRow(row.id, st, ctx.weighed, ctx.factor, row.grams)
+        } catch {
+          // No switch — the row logs as scanned.
+        }
+      })()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [readyRows])
 
   if (phase.kind === 'analyzing' || phase.kind === 'captured') {
     const stage = phase.kind === 'analyzing' ? phase.stage : 'preparing'
@@ -249,6 +308,7 @@ export default function Result() {
                 <TextInput
                   accessibilityLabel={`Grams of ${row.displayName}`}
                   keyboardType="numeric"
+                  key={`g-${row.id}-${gramsEpoch}`}
                   defaultValue={String(Math.round(row.grams))}
                   onChangeText={(t) => editGrams(row.id, Number(t))}
                   style={[styles.gramInput, { color: theme.text, borderColor: theme.border }]}
@@ -264,6 +324,14 @@ export default function Result() {
                   <Text style={{ color: theme.textFaint, fontSize: 20 }}>×</Text>
                 </Pressable>
               </View>
+
+              {cookRows[row.id] ? (
+                <CookSwitch
+                  state={cookRows[row.id]!}
+                  onWeighed={(w) => applyCookRow(row.id, cookRows[row.id]!, w, cookRows[row.id]!.factor, row.grams)}
+                  onFactor={(f) => applyCookRow(row.id, cookRows[row.id]!, cookRows[row.id]!.weighed, f, row.grams)}
+                />
+              ) : null}
 
               {lookup ? <WebLookupCard rowId={row.id} state={lookup} /> : null}
             </View>
@@ -291,6 +359,10 @@ export default function Result() {
               void (async () => {
                 try {
                   await logMeal(result, phase.meta, phase.photoUri, Date.now())
+                  const h = await userDbHandle()
+                  for (const st of Object.values(cookRows)) {
+                    await saveCookPref(h, st.ctx, { weighed: st.weighed, factor: st.factor }).catch(() => {})
+                  }
                   reset()
                   router.dismissAll()
                 } catch {
@@ -488,6 +560,49 @@ function Macro({
  * fiber/sugar/sodium with the health score. The score is arithmetic from
  * @nutai/totals — tap it and every point shows its named rule.
  */
+function CookSwitch({
+  state, onWeighed, onFactor,
+}: {
+  state: { ctx: { basis: CookState }; weighed: CookState; factor: number }
+  onWeighed: (w: CookState) => void
+  onFactor: (f: number) => void
+}) {
+  const theme = useTheme()
+  const f = Math.round(state.factor * 10) / 10
+  return (
+    <View style={[styles.cookBox, { backgroundColor: theme.bgSunken }]}>
+      <View style={styles.cookRow}>
+        <Text style={[type.label, { color: theme.textMuted }]}>Gewogen</Text>
+        <View style={[styles.segment, { borderColor: theme.border }]}>
+          {(['raw', 'cooked'] as const).map((s) => (
+            <Pressable
+              key={s}
+              onPress={() => { if (s !== state.weighed) onWeighed(s) }}
+              accessibilityRole="button"
+              accessibilityState={{ selected: state.weighed === s }}
+              style={[styles.segBtn, state.weighed === s && { backgroundColor: theme.text }]}
+            >
+              <Text style={[type.label, { color: state.weighed === s ? theme.bg : theme.text }]}>
+                {s === 'raw' ? 'Roh' : 'Gekocht'}
+              </Text>
+            </Pressable>
+          ))}
+        </View>
+      </View>
+      <View style={[styles.cookRow, { marginTop: space.sm }]}>
+        <Text style={[type.caption, { color: theme.textMuted, flex: 1 }]}>100 g roh ≈ {Math.round(100 * f)} g gekocht</Text>
+        <Pressable onPress={() => onFactor(f - 0.1)} accessibilityLabel="Faktor kleiner" style={[styles.miniBtn, { borderColor: theme.border }]}>
+          <Text style={[type.bodyStrong, { color: theme.text }]}>−</Text>
+        </Pressable>
+        <Text style={[type.bodyStrong, { color: theme.text, minWidth: 40, textAlign: 'center' }]}>×{String(f).replace('.', ',')}</Text>
+        <Pressable onPress={() => onFactor(f + 0.1)} accessibilityLabel="Faktor größer" style={[styles.miniBtn, { borderColor: theme.border }]}>
+          <Text style={[type.bodyStrong, { color: theme.text }]}>+</Text>
+        </Pressable>
+      </View>
+    </View>
+  )
+}
+
 function StatsPager({ totals, grams }: { totals: Parameters<typeof healthScore>[0]; grams: number }) {
   const theme = useTheme()
   const { width } = useWindowDimensions()
@@ -564,6 +679,14 @@ function StatsPager({ totals, grams }: { totals: Parameters<typeof healthScore>[
 }
 
 const styles = StyleSheet.create({
+  cookBox: { borderRadius: radius.lg, padding: space.md, marginTop: space.sm, marginBottom: space.sm },
+  cookRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: space.sm },
+  segment: { flexDirection: 'row', borderWidth: StyleSheet.hairlineWidth, borderRadius: radius.pill, padding: 2 },
+  segBtn: { paddingHorizontal: space.lg, minHeight: 34, borderRadius: radius.pill, alignItems: 'center', justifyContent: 'center' },
+  miniBtn: {
+    width: 34, height: 34, borderRadius: radius.pill, borderWidth: StyleSheet.hairlineWidth,
+    alignItems: 'center', justifyContent: 'center',
+  },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: space.xl },
   statsPage: { flexDirection: 'row', gap: space.md },
   dots: { flexDirection: 'row', justifyContent: 'center', gap: 6, marginTop: space.md },
