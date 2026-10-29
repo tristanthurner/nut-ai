@@ -13,6 +13,7 @@ import Storage from 'expo-sqlite/kv-store'
 import { ONBOARDING_DONE_KEY } from '../onboarding/done-key'
 import { EXPORT_TABLES, WIPE_ONLY_TABLES } from './backup-core'
 import { localDate, slotFor } from './date-utils'
+import * as dayLog from './day-log'
 import { clearCredential } from '../inference/credentials'
 import { disconnectPublik } from '../inference/publik'
 import { openUserDb } from '../db/expo-adapter'
@@ -241,6 +242,32 @@ export async function dayTotals(date: string): Promise<DayTotals> {
     // is worse than a number that is visibly incomplete.
     pendingCount: pending?.c ?? 0,
   }
+}
+
+// ---------------------------------------------------------------------------
+// Day list — thin wrappers over the pure, tested functions in day-log.ts
+// ---------------------------------------------------------------------------
+
+export type { DayItem, DayNutrients, Slot, SlotGroup } from './day-log'
+
+export async function dayItems(date: string): Promise<dayLog.DayItem[]> {
+  return dayLog.dayItems(await db(), date)
+}
+
+export async function dayNutrients(date: string): Promise<dayLog.DayNutrients> {
+  return dayLog.dayNutrients(await db(), date)
+}
+
+export async function setItemGrams(itemId: number, grams: number): Promise<void> {
+  return dayLog.updateItemGrams(await db(), itemId, grams)
+}
+
+export async function setMealSlot(mealId: number, slot: dayLog.Slot): Promise<void> {
+  return dayLog.updateMealSlot(await db(), mealId, slot)
+}
+
+export async function removeItem(itemId: number): Promise<void> {
+  return dayLog.deleteItem(await db(), itemId)
 }
 
 // ---------------------------------------------------------------------------

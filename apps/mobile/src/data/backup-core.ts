@@ -1,4 +1,4 @@
-import type { DbAdapter, SqlValue } from '@nutai/db-adapter'
+import { REPAIR_DB_SEARCH_SNAPSHOT_SQL, type DbAdapter, type SqlValue } from '@nutai/db-adapter'
 
 /**
  * Backup and restore — the pure core.
@@ -185,6 +185,12 @@ export async function importBackupPayload(
         n++
       }
       rowCounts[t] = n
+    }
+
+    // A pre-v2 backup carries Food Database entries with their snapshot still
+    // scaled to grams — the same data the v2 migration repairs in place.
+    if (payload.schema_version < 2) {
+      await tx.exec(REPAIR_DB_SEARCH_SNAPSHOT_SQL)
     }
   })
 

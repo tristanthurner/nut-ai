@@ -92,16 +92,41 @@ describe('resolveSelection + logManualFood — what a tap on a Food Database row
     expect(selection.grams).toBe(50) // the seeded is_fndds_default row, not the 100 g fallback
   })
 
-  it('scales the per-100g snapshot to the logged grams — 50 g of a 143 kcal/100g egg is ~71.5 kcal', async () => {
+  it('stores the per-100g snapshot unscaled; grams do the scaling — 50 g of a 143 kcal/100g egg counts ~71.5 kcal', async () => {
     const selection = await resolveSelection(nutritionDb, candidateFor('1', 'Egg, whole, raw, fresh', 143))
     const mealId = await logManualFood(userDb, selection, NOW)
 
-    const item = await userDb.get<{ snap_energy_kcal: number; snap_protein_g: number }>(
-      'SELECT snap_energy_kcal, snap_protein_g FROM log_items WHERE meal_id = ?',
+    const item = await userDb.get<{ snap_energy_kcal: number; snap_protein_g: number; grams: number }>(
+      'SELECT snap_energy_kcal, snap_protein_g, grams FROM log_items WHERE meal_id = ?',
       [mealId],
     )
-    expect(item?.snap_energy_kcal).toBeCloseTo(71.5, 1)
-    expect(item?.snap_protein_g).toBeCloseTo(6.3, 1)
+    // Per 100 g — the same basis logMeal writes and dayTotals reads.
+    expect(item?.snap_energy_kcal).toBeCloseTo(143, 1)
+    expect(item?.snap_protein_g).toBeCloseTo(12.6, 1)
+
+    // Exactly the arithmetic dayTotals runs: counted once, not twice.
+    const total = await userDb.get<{ kcal: number }>(
+      `SELECT SUM(li.snap_energy_kcal * li.grams / 100.0 * m.portion_eaten_fraction) AS kcal
+       FROM meals m JOIN log_items li ON li.meal_id = m.id WHERE m.id = ?`,
+      [mealId],
+    )
+    expect(total?.kcal).toBeCloseTo(71.5, 1)
+  })
+
+  it('logs into the chosen day and meal slot with user-set grams', async () => {
+    const selection = await resolveSelection(nutritionDb, candidateFor('1', 'Egg, whole, raw, fresh', 143))
+    const mealId = await logManualFood(
+      userDb,
+      { ...selection, grams: 120 },
+      NOW,
+      { date: '2025-01-02', slot: 'dinner', gramsUserSet: true },
+    )
+    const row = await userDb.get<{ local_date: string; meal_slot: string; grams: number; gram_pathway: string }>(
+      `SELECT m.local_date, m.meal_slot, li.grams, li.gram_pathway
+       FROM meals m JOIN log_items li ON li.meal_id = m.id WHERE m.id = ?`,
+      [mealId],
+    )
+    expect(row).toEqual({ local_date: '2025-01-02', meal_slot: 'dinner', grams: 120, gram_pathway: 'user_edited' })
   })
 
   it('falls back to 100 g when the corpus row has no portion data at all', async () => {

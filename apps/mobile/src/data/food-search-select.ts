@@ -60,3 +60,49 @@ export async function resolveSelection(nutritionDb: DbAdapter, candidate: Scored
     },
   }
 }
+
+export interface PortionOption {
+  label: string
+  grams: number
+}
+
+function fmtAmount(n: number | null): string {
+  if (n == null) return '1'
+  return Number.isInteger(n) ? String(n) : String(Math.round(n * 100) / 100)
+}
+
+/**
+ * Quick-pick portions for the gram picker: the row's own recorded portions
+ * (a packaged product's serving, USDA's "1 large", "1 cup", …) in their
+ * recorded order, de-duplicated by weight. The picker adds 100 g itself and
+ * always lets the person type any number, so these are shortcuts, never limits.
+ */
+export async function portionOptions(nutritionDb: DbAdapter, foodId: number, max = 4): Promise<PortionOption[]> {
+  const rows = await nutritionDb.all<{
+    measure_unit: string | null
+    modifier: string | null
+    amount: number | null
+    gram_weight: number
+  }>(
+    `SELECT measure_unit, modifier, amount, gram_weight FROM food_portions
+     WHERE food_id = ? AND gram_weight > 0
+     ORDER BY is_fndds_default DESC, id`,
+    [foodId],
+  )
+
+  const out: PortionOption[] = []
+  const seen = new Set<number>()
+  for (const r of rows) {
+    const g = Math.round(r.gram_weight * 10) / 10
+    if (seen.has(g)) continue
+    seen.add(g)
+    const unit = r.measure_unit && r.measure_unit !== 'undetermined' ? r.measure_unit : ''
+    const label =
+      unit === 'serving'
+        ? `1 serving${r.modifier ? ` · ${r.modifier}` : ''}`
+        : [fmtAmount(r.amount), unit, r.modifier ?? ''].filter(Boolean).join(' ').trim()
+    out.push({ label: label || `${g} g`, grams: g })
+    if (out.length >= max) break
+  }
+  return out
+}
