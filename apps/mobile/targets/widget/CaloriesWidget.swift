@@ -22,8 +22,26 @@ enum SharedStore {
 
   /// Same resolution as the app side: the first App Group this extension is
   /// actually entitled to. Sideloading tools may rename groups (team ID suffix).
+  /// The groups this extension is really entitled to, from its own embedded
+  /// provisioning profile (see WidgetBridgeModule for why this comes first).
+  static func profileAppGroups() -> [String] {
+    guard let url = Bundle.main.url(forResource: "embedded", withExtension: "mobileprovision"),
+          let data = try? Data(contentsOf: url),
+          let raw = String(data: data, encoding: .isoLatin1),
+          let start = raw.range(of: "<?xml"),
+          let end = raw.range(of: "</plist>", range: start.upperBound..<raw.endIndex)
+    else { return [] }
+    let xml = String(raw[start.lowerBound..<end.upperBound])
+    guard let plistData = xml.data(using: .isoLatin1),
+          let plist = try? PropertyListSerialization.propertyList(from: plistData, format: nil) as? [String: Any],
+          let ents = plist["Entitlements"] as? [String: Any],
+          let groups = ents["com.apple.security.application-groups"] as? [String]
+    else { return [] }
+    return groups
+  }
+
   static func candidateGroups() -> [String] {
-    var out: [String] = []
+    var out: [String] = profileAppGroups()
     if let alt = Bundle.main.object(forInfoDictionaryKey: "ALTAppGroups") as? [String] { out += alt }
     if let own = Bundle.main.object(forInfoDictionaryKey: "NutAIAppGroup") as? String { out.append(own) }
     out.append(defaultGroup)
@@ -36,15 +54,28 @@ enum SharedStore {
     return out.filter { seen.insert($0).inserted }
   }
 
-  static func load() -> TodaySummary? {
+  enum LoadResult {
+    case ok(TodaySummary)
+    /// The extension has no usable App Group — the install did not grant one.
+    case noContainer
+    /// Shared container exists, but the app has not written yet.
+    case noData
+  }
+
+  static func loadResult() -> LoadResult {
     for g in candidateGroups() {
       guard let dir = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: g) else { continue }
       let url = dir.appendingPathComponent(fileName)
       if let data = try? Data(contentsOf: url), let s = try? JSONDecoder().decode(TodaySummary.self, from: data) {
-        return s
+        return .ok(s)
       }
-      return nil
+      return .noData
     }
+    return .noContainer
+  }
+
+  static func load() -> TodaySummary? {
+    if case .ok(let s) = loadResult() { return s }
     return nil
   }
 
@@ -64,6 +95,8 @@ struct CaloriesEntry: TimelineEntry {
   /// nil = the app has never written (not opened yet, or no shared container).
   let summary: TodaySummary?
   let isToday: Bool
+  /// Distinguishes "open the app once" from "this install cannot share data".
+  var noContainer: Bool = false
 
   var target: Double { summary?.kcalTarget ?? 0 }
   /// A summary from yesterday must not carry yesterday's total into today.
@@ -78,8 +111,14 @@ struct CaloriesEntry: TimelineEntry {
 
 struct Provider: TimelineProvider {
   func entry(at date: Date) -> CaloriesEntry {
-    let s = SharedStore.load()
-    return CaloriesEntry(date: date, summary: s, isToday: s?.date == SharedStore.todayKey(date))
+    switch SharedStore.loadResult() {
+    case .ok(let s):
+      return CaloriesEntry(date: date, summary: s, isToday: s.date == SharedStore.todayKey(date))
+    case .noData:
+      return CaloriesEntry(date: date, summary: nil, isToday: false)
+    case .noContainer:
+      return CaloriesEntry(date: date, summary: nil, isToday: false, noContainer: true)
+    }
   }
 
   func placeholder(in context: Context) -> CaloriesEntry {
@@ -176,10 +215,13 @@ struct MacroBar: View {
 }
 
 struct NoDataView: View {
+  var noContainer: Bool = false
   var body: some View {
     VStack(spacing: 6) {
-      Image(systemName: "fork.knife").font(.title2)
-      Text("Open Nut AI once to show today's calories")
+      Image(systemName: noContainer ? "exclamationmark.triangle" : "fork.knife").font(.title2)
+      Text(noContainer
+           ? "Widget can't reach the app — see Profile → Home screen widget"
+           : "Open Nut AI once to show today's calories")
         .font(.system(size: 12, weight: .medium))
         .multilineTextAlignment(.center)
         .foregroundStyle(.secondary)
@@ -197,7 +239,7 @@ struct CaloriesWidgetView: View {
         switch family {
         case .accessoryCircular: Image(systemName: "fork.knife")
         case .accessoryRectangular: Text("Nut AI · open app")
-        default: NoDataView()
+        default: NoDataView(noContainer: entry.noContainer)
         }
       } else {
         switch family {
