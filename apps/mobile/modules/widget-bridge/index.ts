@@ -1,8 +1,17 @@
 import { requireOptionalNativeModule } from 'expo'
 
+export interface WidgetBridgeStatus {
+  group: string | null
+  profileGroups: string[]
+  candidates: string[]
+  fileExists: boolean
+  bundleId: string
+}
+
 interface WidgetBridgeNative {
   appGroup(): string | null
   write(json: string): boolean
+  status(): WidgetBridgeStatus
 }
 
 /**
@@ -24,5 +33,14 @@ export function writeWidgetData(json: string): boolean {
     return native?.write(json) ?? false
   } catch {
     return false
+  }
+}
+
+/** null when this build has no widget module at all. */
+export function widgetStatus(): WidgetBridgeStatus | null {
+  try {
+    return native?.status() ?? null
+  } catch {
+    return null
   }
 }
