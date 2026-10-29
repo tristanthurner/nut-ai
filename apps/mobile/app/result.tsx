@@ -1,7 +1,8 @@
 import { router } from 'expo-router'
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   ActivityIndicator,
+  Alert,
   Image,
   Linking,
   Pressable,
@@ -52,6 +53,29 @@ export default function Result() {
   const [logging, setLogging] = useState(false)
   const [fixOpen, setFixOpen] = useState(false)
   const [fixText, setFixText] = useState('')
+
+  // A barcode nobody knows: ask straight away instead of leaving the person
+  // to find the button. Asked once per scanned code.
+  const askedFor = useRef<string | null>(null)
+  const unknownBarcode = phase.kind === 'failed' ? phase.addProductBarcode ?? null : null
+  useEffect(() => {
+    if (!unknownBarcode || askedFor.current === unknownBarcode) return
+    askedFor.current = unknownBarcode
+    Alert.alert(
+      'Product not found',
+      `Barcode ${unknownBarcode} is not in the database yet. Do you want to add this product?`,
+      [
+        { text: 'Not now', style: 'cancel' },
+        {
+          text: 'Add product',
+          onPress: () => {
+            reset()
+            router.replace({ pathname: '/product-editor', params: { barcode: unknownBarcode, then: 'search' } } as never)
+          },
+        },
+      ],
+    )
+  }, [unknownBarcode])
 
   if (phase.kind === 'analyzing' || phase.kind === 'captured') {
     const stage = phase.kind === 'analyzing' ? phase.stage : 'preparing'
