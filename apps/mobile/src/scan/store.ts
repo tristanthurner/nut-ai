@@ -114,6 +114,22 @@ export function editGrams(rowId: string, grams: number) {
   }))
 }
 
+/**
+ * Raw/cooked switch on a scanned pasta or rice pack: the row's per-100 g
+ * values and name now refer to the weighed state, and the grams to what is
+ * on the scale.
+ */
+export function setRowWeighing(
+  rowId: string,
+  patch: { displayName: string; nutrientSnapshot: IngredientRow['nutrientSnapshot']; grams: number },
+) {
+  if (!Number.isFinite(patch.grams) || patch.grams < 0) return
+  mutateMeal((meal) => ({
+    ...meal,
+    ingredients: meal.ingredients.map((r) => (r.id === rowId ? { ...r, ...patch } : r)),
+  }))
+}
+
 export function removeRow(rowId: string) {
   // No special-casing "AI-added" versus "user-added" once a row is in the list.
   // There is no data-model difference between "the AI added rice and I removed
