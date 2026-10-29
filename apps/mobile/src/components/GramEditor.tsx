@@ -45,6 +45,8 @@ interface Props {
   eatenFraction?: number
   onConfirm: (grams: number, slot: Slot | undefined) => Promise<void> | void
   onDelete?: () => Promise<void> | void
+  /** An optional secondary action under the main button, e.g. "Save meal as favourite". */
+  extraAction?: { label: string; onPress: () => void }
   onClose: () => void
 }
 
@@ -67,7 +69,7 @@ function fmt(n: number, digits = 0): string {
  */
 export function GramEditor({
   visible, title, subtitle, per100, initialGrams, portions = [], initialSlot,
-  confirmLabel, eatenFraction = 1, onConfirm, onDelete, onClose,
+  confirmLabel, eatenFraction = 1, onConfirm, onDelete, extraAction, onClose,
 }: Props) {
   const theme = useTheme()
   const insets = useSafeAreaInsets()
@@ -246,6 +248,12 @@ export function GramEditor({
                 <Text style={[type.bodyStrong, { color: theme.bg }]}>{confirmLabel}</Text>
               )}
             </Pressable>
+
+            {extraAction ? (
+              <Pressable onPress={extraAction.onPress} disabled={busy} accessibilityRole="button" style={styles.secondary}>
+                <Text style={[type.bodyStrong, { color: theme.protein }]}>{extraAction.label}</Text>
+              </Pressable>
+            ) : null}
 
             {onDelete ? (
               <Pressable onPress={remove} disabled={busy} accessibilityRole="button" style={styles.secondary}>
