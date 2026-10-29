@@ -385,8 +385,30 @@ CREATE TABLE IF NOT EXISTS accuracy_baselines (
 );
 `
 
+/**
+ * v2 data repair. Food Database (`db_search`) entries were written with their
+ * snapshot ALREADY scaled to the logged grams, while every reader — dayTotals
+ * included — treats `snap_*` as per-100 g and scales by `grams / 100` itself.
+ * Those rows were therefore counted twice over (250 g of milk at 64 kcal/100 g
+ * read as 400 kcal instead of 160). Un-scale them back to per-100 g so they
+ * match every other logging path.
+ *
+ * Exported so a restore of a pre-v2 backup can apply the same repair.
+ */
+export const REPAIR_DB_SEARCH_SNAPSHOT_SQL = `
+UPDATE log_items SET
+  snap_energy_kcal = snap_energy_kcal * 100.0 / grams,
+  snap_protein_g   = snap_protein_g   * 100.0 / grams,
+  snap_fat_g       = snap_fat_g       * 100.0 / grams,
+  snap_carb_g      = snap_carb_g      * 100.0 / grams,
+  snap_fiber_g     = snap_fiber_g     * 100.0 / grams,
+  snap_sugar_g     = snap_sugar_g     * 100.0 / grams,
+  snap_sodium_mg   = snap_sodium_mg   * 100.0 / grams
+WHERE portion_source = 'db_search' AND grams > 0;
+`
+
 /** Current user-schema version. Bump with every migration added below. */
-export const USER_SCHEMA_VERSION = 1
+export const USER_SCHEMA_VERSION = 2
 
 export interface Migration {
   version: number
@@ -400,4 +422,7 @@ export interface Migration {
  * Migration tests run forward from EVERY shipped version, because a user who
  * skipped three releases must land in the same place as one who took all of them.
  */
-export const MIGRATIONS: readonly Migration[] = [{ version: 1, sql: USER_SCHEMA }]
+export const MIGRATIONS: readonly Migration[] = [
+  { version: 1, sql: USER_SCHEMA },
+  { version: 2, sql: REPAIR_DB_SEARCH_SNAPSHOT_SQL },
+]
