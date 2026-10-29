@@ -1,6 +1,6 @@
 import { Tabs, router } from 'expo-router'
 import { useState } from 'react'
-import { Modal, Pressable, StyleSheet, Text, View } from 'react-native'
+import { Modal, Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { Icon, type IconName } from '../../src/components/Icon'
 import { useTheme } from '../../src/theme/ThemeProvider'
@@ -43,6 +43,10 @@ export default function TabLayout() {
   const theme = useTheme()
   const insets = useSafeAreaInsets()
   const [sheetOpen, setSheetOpen] = useState(false)
+  const { width: screenW } = useWindowDimensions()
+  // Two exact columns: a percentage width plus a fixed gap never adds up to
+  // the row, which left the grid hugging the left edge.
+  const tileW = Math.floor((screenW - space.lg * 2 - space.md) / 2)
 
   return (
     <>
@@ -99,10 +103,12 @@ export default function TabLayout() {
                   setSheetOpen(false)
                   router.push(a.route as never)
                 }}
-                style={[styles.action, { backgroundColor: theme.bgElevated }]}
+                style={[styles.action, { width: tileW, backgroundColor: theme.bgElevated }]}
               >
                 <Icon name={a.icon} size={28} color={theme.text} />
-                <Text style={[type.bodyStrong, { color: theme.text, marginTop: space.sm }]}>{a.label}</Text>
+                <Text style={[type.bodyStrong, { color: theme.text, marginTop: space.sm, textAlign: 'center' }]} numberOfLines={1}>
+                  {a.label}
+                </Text>
               </Pressable>
             ))}
           </View>
@@ -160,11 +166,11 @@ const styles = StyleSheet.create({
   grid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
+    justifyContent: 'center',
     gap: space.md,
     paddingHorizontal: space.lg,
   },
   action: {
-    width: '47%',
     aspectRatio: 1.35,
     borderRadius: radius.lg,
     alignItems: 'center',

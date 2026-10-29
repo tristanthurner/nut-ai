@@ -11,6 +11,7 @@ import { loadCredential, maskCredential } from '../../src/inference/credentials'
 import { loadPublikWallet, publikConnected } from '../../src/inference/publik'
 import { formatMicros } from '../../src/inference/publik-core'
 import { loadReminderSettings } from '../../src/notifications/reminders'
+import { widgetStatus } from '../../modules/widget-bridge'
 import { PROVIDER_NAME } from '../../src/components/CredentialForm'
 import { Icon } from '../../src/components/Icon'
 import { useTheme } from '../../src/theme/ThemeProvider'
@@ -201,6 +202,34 @@ export default function Profile() {
         <Row
           label="Adaptive target"
           value={goal ? (goal.adaptive ? 'On' : 'Off — set by hand') : '—'}
+        />
+      </Section>
+
+      <Section title="Home screen widget">
+        <Row
+          label="Widget connection"
+          value={(() => {
+            const st = widgetStatus()
+            if (!st) return 'Not in this build'
+            if (!st.group) return 'Not available'
+            return st.fileExists ? 'Connected' : 'Waiting for data'
+          })()}
+          onPress={() => {
+            const st = widgetStatus()
+            if (!st) {
+              Alert.alert('Widget', 'This build was installed without the widget (NutAI-ohne-Widget.ipa).')
+              return
+            }
+            const lines = [
+              st.group
+                ? `Shared App Group: ${st.group}`
+                : 'This install has no shared App Group, so the widget cannot read your numbers. The sideloading tool did not register one when it signed the app.',
+              `App Groups in the signing profile: ${st.profileGroups.length ? st.profileGroups.join(', ') : 'none'}`,
+              `Bundle ID: ${st.bundleId}`,
+              st.group && !st.fileExists ? 'Open the Home tab once so the widget gets today\'s numbers.' : '',
+            ].filter(Boolean)
+            Alert.alert('Widget connection', lines.join('\n\n'))
+          }}
         />
       </Section>
 

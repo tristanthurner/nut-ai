@@ -16,6 +16,7 @@ import { Icon, type IconName } from '../../src/components/Icon'
 import {
   currentGoal,
   dayItems,
+  addWater,
   dayNutrients,
   dayTotals,
   localDate,
@@ -23,6 +24,9 @@ import {
   runAdaptive,
   setItemGrams,
   setMealSlot,
+  undoLastWater,
+  WATER_GOAL_ML,
+  waterTotal,
   type AdaptiveOutcome,
   type CurrentGoal,
   type DayItem,
@@ -32,6 +36,7 @@ import {
 import { groupBySlot, type Slot } from '../../src/data/day-log'
 import { GramEditor, SLOT_LABEL } from '../../src/components/GramEditor'
 import { syncReminders } from '../../src/notifications/reminders'
+import { WaterSheet } from '../../src/components/WaterSheet'
 import { updateWidget } from '../../src/widget/sync'
 import { useTheme } from '../../src/theme/ThemeProvider'
 import { radius, space, type } from '../../src/theme/tokens'
@@ -66,6 +71,8 @@ export default function Home() {
   const [nutrients, setNutrients] = useState<DayNutrients | null>(null)
   const [editing, setEditing] = useState<DayItem | null>(null)
   const [reloadKey, setReloadKey] = useState(0)
+  const [waterMl, setWaterMl] = useState(0)
+  const [waterOpen, setWaterOpen] = useState(false)
 
   const selected = useMemo(() => Date.now() + offset * 86_400_000, [offset])
   const selectedDate = localDate(selected)
@@ -78,11 +85,12 @@ export default function Home() {
         // changed is the one rendered. Its own gates decide whether it may act.
         const outcome = await runAdaptive(Date.now())
         const date = localDate(selected)
-        const [g, t, its, n] = await Promise.all([
+        const [g, t, its, n, w] = await Promise.all([
           currentGoal(),
           dayTotals(date),
           dayItems(date),
           dayNutrients(date),
+          waterTotal(date),
         ])
         if (!alive) return
         setAdaptive(outcome)
@@ -90,6 +98,7 @@ export default function Home() {
         setTotals(t)
         setItems(its)
         setNutrients(n)
+        setWaterMl(w)
         // Today's log just changed or was opened: drop reminders for meals now
         // logged, and repaint the home screen widget.
         void syncReminders()
@@ -240,10 +249,16 @@ export default function Home() {
                 <Icon name="water" size={22} color={theme.protein} />
                 <View>
                   <Text style={[type.caption, { color: theme.textMuted }]}>Water</Text>
-                  <Text style={[type.bodyStrong, { color: theme.text }]}>0 ml</Text>
+                  <Text style={[type.bodyStrong, { color: theme.text }]}>{Math.round(waterMl)} / {WATER_GOAL_ML} ml</Text>
                 </View>
               </View>
-              <Pressable style={[styles.ghost, { borderColor: theme.border }]}>
+              <Pressable
+                onPress={() => setWaterOpen(true)}
+                accessibilityRole="button"
+                accessibilityLabel="Log water"
+                hitSlop={space.sm}
+                style={[styles.ghost, { borderColor: theme.border }]}
+              >
                 <Text style={[type.label, { color: theme.text }]}>Log Water</Text>
               </Pressable>
             </View>
@@ -372,6 +387,22 @@ export default function Home() {
           ))
         )}
       </View>
+
+      <WaterSheet
+        visible={waterOpen}
+        totalMl={waterMl}
+        goalMl={WATER_GOAL_ML}
+        dayLabel={dayTitle(offset, selected)}
+        onAdd={async (ml) => {
+          await addWater(selectedDate, ml)
+          setWaterMl(await waterTotal(selectedDate))
+        }}
+        onUndo={async () => {
+          await undoLastWater(selectedDate)
+          setWaterMl(await waterTotal(selectedDate))
+        }}
+        onClose={() => setWaterOpen(false)}
+      />
 
       {editing ? (
         <GramEditor
