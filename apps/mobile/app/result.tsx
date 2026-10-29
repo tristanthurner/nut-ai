@@ -96,6 +96,18 @@ export default function Result() {
             <Text style={[type.bodyStrong, { color: theme.bg }]}>{phase.action.label}</Text>
           </Pressable>
         ) : null}
+        {phase.addProductBarcode ? (
+          <Pressable
+            onPress={() => {
+              const code = phase.addProductBarcode!
+              reset()
+              router.replace({ pathname: '/product-editor', params: { barcode: code, then: 'search' } } as never)
+            }}
+            style={[styles.primary, { backgroundColor: theme.text, marginTop: space.xl, paddingHorizontal: space.xl }]}
+          >
+            <Text style={[type.bodyStrong, { color: theme.bg }]}>Add as new product</Text>
+          </Pressable>
+        ) : null}
         {phase.canRetry ? (
           <Pressable
             onPress={() => void retryScan()}

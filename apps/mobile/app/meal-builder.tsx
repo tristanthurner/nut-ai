@@ -13,9 +13,11 @@ import {
   recentFoods,
   savedItemsFromLoggedMeal,
   savedMeal,
+  searchUserFoods,
   updateSavedMeal,
   type SavedMealItem,
   type TrackedFood,
+  type UserFood,
 } from '../src/data/repo'
 import { GramEditor } from '../src/components/GramEditor'
 import { Icon } from '../src/components/Icon'
@@ -52,6 +54,7 @@ export default function MealBuilder() {
   const [nutritionDb, setNutritionDb] = useState<DbAdapter | null>(null)
   const [query, setQuery] = useState('')
   const [results, setResults] = useState<ScoredCandidate[]>([])
+  const [mineResults, setMineResults] = useState<UserFood[]>([])
   const [recent, setRecent] = useState<TrackedFood[]>([])
   const [searching, setSearching] = useState(false)
   const [pending, setPending] = useState<Pending | null>(null)
@@ -93,7 +96,23 @@ export default function MealBuilder() {
     return () => { alive = false; clearTimeout(timer) }
   }, [nutritionDb, query])
 
+  useEffect(() => {
+    if (query.trim().length < 2) { setMineResults([]); return }
+    let alive = true
+    void searchUserFoods(query, 6).then((r) => { if (alive) setMineResults(r) })
+    return () => { alive = false }
+  }, [query])
+
   const totals = useMemo(() => mealTotals(items), [items])
+
+  function pickUserFood(f: UserFood) {
+    setPending({
+      index: null,
+      brand: f.brand,
+      portions: f.servingG != null ? [{ label: '1 portion', grams: f.servingG }] : [],
+      item: { foodId: f.id, source: 'user', name: f.name, grams: f.servingG ?? 100, per100: f.per100 },
+    })
+  }
 
   async function pickCandidate(c: ScoredCandidate) {
     if (!nutritionDb) return
@@ -116,14 +135,18 @@ export default function MealBuilder() {
   }
 
   async function pickRecent(f: TrackedFood) {
-    const portions = nutritionDb ? await portionOptions(nutritionDb, f.foodId) : []
-    setPending({ index: null, portions, item: { foodId: f.foodId, name: f.name, grams: f.lastGrams, per100: f.per100 } })
+    const portions = nutritionDb && f.source === 'corpus' ? await portionOptions(nutritionDb, f.foodId) : []
+    setPending({
+      index: null,
+      portions,
+      item: { foodId: f.foodId, ...(f.source === 'user' ? { source: 'user' as const } : {}), name: f.name, grams: f.lastGrams, per100: f.per100 },
+    })
   }
 
   async function editItem(index: number) {
     const it = items[index]
     if (!it) return
-    const portions = nutritionDb && it.foodId != null ? await portionOptions(nutritionDb, it.foodId) : []
+    const portions = nutritionDb && it.foodId != null && it.source !== 'user' ? await portionOptions(nutritionDb, it.foodId) : []
     setPending({ index, item: it, portions })
   }
 
@@ -252,6 +275,24 @@ export default function MealBuilder() {
         {searching ? <ActivityIndicator style={{ marginTop: space.md }} color={theme.textFaint} /> : null}
 
         {query.trim().length >= 2
+          ? mineResults.map((f) => (
+              <Pressable
+                key={`u${f.id}`}
+                onPress={() => pickUserFood(f)}
+                accessibilityRole="button"
+                style={[styles.result, { borderBottomColor: theme.border }]}
+              >
+                <View style={{ flex: 1 }}>
+                  <Text style={[type.body, { color: theme.text }]} numberOfLines={1}>{f.name}</Text>
+                  <Text style={[type.caption, { color: theme.textMuted }]}>
+                    {Math.round(f.per100.kcal)} kcal / 100 g · Selbst hinzugefügt
+                  </Text>
+                </View>
+                <Text style={[type.heading, { color: theme.textFaint }]}>+</Text>
+              </Pressable>
+            ))
+          : null}
+        {query.trim().length >= 2
           ? results.map((r) => (
               <Pressable
                 key={r.foodId}
@@ -270,7 +311,7 @@ export default function MealBuilder() {
             ))
           : recent.map((f) => (
               <Pressable
-                key={`r${f.foodId}`}
+                key={`r${f.source}${f.foodId}`}
                 onPress={() => void pickRecent(f)}
                 accessibilityRole="button"
                 style={[styles.result, { borderBottomColor: theme.border }]}

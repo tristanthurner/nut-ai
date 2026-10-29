@@ -8,12 +8,17 @@ import { nutritionCorpusInfo, openNutritionDb } from '../src/db/expo-adapter'
 import {
   db as userDbHandle,
   frequentFoods,
+  getUserFood,
+  listUserFoods,
   logSavedMeal,
+  logUserFood,
+  searchUserFoods,
   mealTotals,
   recentFoods,
   savedMeals,
   type SavedMeal,
   type TrackedFood,
+  type UserFood,
 } from '../src/data/repo'
 import { MealLogSheet } from '../src/components/MealLogSheet'
 import { portionOptions, resolveSelection, type PortionOption } from '../src/data/food-search-select'
@@ -37,6 +42,36 @@ interface Draft {
   subtitle: string | null
   selection: ManualFoodSelection
   portions: PortionOption[]
+  /** Set when the food is a self-added product: logs as source 'user'. */
+  userFood?: UserFood
+}
+
+type Tab = 'recent' | 'frequent' | 'user'
+const TABS: { key: Tab; label: string }[] = [
+  { key: 'recent', label: 'Zuletzt getrackt' },
+  { key: 'frequent', label: 'Häufig getrackt' },
+  { key: 'user', label: 'Selbst hinzugefügt' },
+]
+
+function userFoodPortions(f: UserFood): PortionOption[] {
+  return f.servingG != null ? [{ label: '1 portion', grams: f.servingG }] : []
+}
+
+function userFoodSelection(f: UserFood, grams: number): ManualFoodSelection {
+  return {
+    foodId: f.id,
+    displayName: f.name,
+    grams,
+    nutrientSnapshot: {
+      kcal: f.per100.kcal,
+      protein_g: f.per100.protein_g,
+      fat_g: f.per100.fat_g,
+      carbs_g: f.per100.carbs_g,
+      fiber_g: f.per100.fiber_g,
+      sugar_g: f.per100.sugar_g,
+      sodium_mg: f.per100.sodium_mg,
+    },
+  }
 }
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/
@@ -67,24 +102,39 @@ export default function FoodSearch() {
   const [frequent, setFrequent] = useState<TrackedFood[]>([])
   const [meals, setMeals] = useState<SavedMeal[]>([])
   const [logMeal, setLogMeal] = useState<SavedMeal | null>(null)
+  const [mine, setMine] = useState<UserFood[]>([])
+  const [mineResults, setMineResults] = useState<UserFood[]>([])
 
-  // Refresh on focus: coming back from the meal builder must show the new meal.
+  // Opened from the day list with ?date=YYYY-MM-DD — log into THAT day.
+  // ?tab=user opens straight on "Selbst hinzugefügt" (after adding a product).
+  const params = useLocalSearchParams<{ date?: string; tab?: string }>()
+  const [tab, setTab] = useState<Tab>(params.tab === 'user' ? 'user' : 'recent')
+
+  // Refresh on focus: coming back from the meal builder or the product
+  // editor must show the new meal or product.
   useFocusEffect(
     useCallback(() => {
       let alive = true
       void (async () => {
-        const [r, f, m] = await Promise.all([recentFoods(8), frequentFoods(8), savedMeals()])
+        const [r, f, m, u] = await Promise.all([recentFoods(10), frequentFoods(10), savedMeals(), listUserFoods()])
         if (!alive) return
         setRecent(r)
         setFrequent(f)
         setMeals(m)
+        setMine(u)
       })()
       return () => { alive = false }
     }, []),
   )
 
-  // Opened from the day list with ?date=YYYY-MM-DD — log into THAT day.
-  const params = useLocalSearchParams<{ date?: string }>()
+  // Self-added products are searched alongside the corpus.
+  useEffect(() => {
+    if (query.trim().length < 2) { setMineResults([]); return }
+    let alive = true
+    void searchUserFoods(query, 8).then((r) => { if (alive) setMineResults(r) })
+    return () => { alive = false }
+  }, [query, mine])
+
   const today = localDate(Date.now())
   const targetDate = typeof params.date === 'string' && ISO_DATE.test(params.date) ? params.date : today
   const defaultSlot = slotFor(Date.now()) as Slot
@@ -146,12 +196,35 @@ export default function FoodSearch() {
     }
   }
 
+  function handleUserFood(f: UserFood, grams?: number, subtitle?: string) {
+    setError(null)
+    setDraft({
+      title: f.name,
+      subtitle: subtitle ?? ['Selbst hinzugefügt', f.brand].filter(Boolean).join(' · '),
+      portions: userFoodPortions(f),
+      selection: userFoodSelection(f, grams ?? f.servingG ?? 100),
+      userFood: f,
+    })
+  }
+
   async function handleTracked(f: TrackedFood) {
     setError(null)
+    const subtitle = f.count > 1 ? `Logged ${f.count}× · last time ${Math.round(f.lastGrams)} g` : `Last time ${Math.round(f.lastGrams)} g`
+    if (f.source === 'user') {
+      const uf = await getUserFood(f.foodId)
+      if (uf) { handleUserFood(uf, f.lastGrams, subtitle); return }
+      // Deleted since: log it once more with the numbers it was logged with.
+      handleUserFood(
+        { id: f.foodId, name: f.name, brand: null, barcode: null, servingG: null, per100: f.per100, createdAt: 0 },
+        f.lastGrams,
+        subtitle,
+      )
+      return
+    }
     const portions = db ? await portionOptions(db, f.foodId) : []
     setDraft({
       title: f.name,
-      subtitle: f.count > 1 ? `Logged ${f.count}× · last time ${Math.round(f.lastGrams)} g` : `Last time ${Math.round(f.lastGrams)} g`,
+      subtitle,
       portions,
       selection: {
         foodId: f.foodId,
@@ -173,12 +246,16 @@ export default function FoodSearch() {
   async function confirmDraft(grams: number, slot: Slot | undefined) {
     if (!draft) return
     try {
-      const userDb = await userDbHandle()
-      await logManualFood(userDb, { ...draft.selection, grams }, Date.now(), {
-        date: targetDate,
-        slot: slot ?? defaultSlot,
-        gramsUserSet: true,
-      })
+      if (draft.userFood) {
+        await logUserFood(draft.userFood, grams, { date: targetDate, slot: slot ?? defaultSlot })
+      } else {
+        const userDb = await userDbHandle()
+        await logManualFood(userDb, { ...draft.selection, grams }, Date.now(), {
+          date: targetDate,
+          slot: slot ?? defaultSlot,
+          gramsUserSet: true,
+        })
+      }
       setDraft(null)
       router.back()
     } catch {
@@ -236,6 +313,10 @@ export default function FoodSearch() {
         <Text style={[type.caption, { color: theme.safety, marginTop: space.md }]}>{error}</Text>
       )}
 
+      {mineResults.map((f) => (
+        <UserFoodRow key={`u${f.id}`} food={f} onPress={() => handleUserFood(f)} />
+      ))}
+
       {results.map((r) => (
         <Pressable
           key={r.foodId}
@@ -264,12 +345,21 @@ export default function FoodSearch() {
         </Pressable>
       ))}
 
-      {query.trim().length >= 2 && !busy && results.length === 0 && (
-        <Text style={[type.caption, { color: theme.textMuted, marginTop: space.lg }]}>
-          Nothing matched. That is not a failure — it logs as an AI estimate with an amber badge,
-          and you can save it as your own food so it resolves instantly next time.
-        </Text>
-      )}
+      {query.trim().length >= 2 && !busy ? (
+        <Pressable
+          onPress={() => router.push({ pathname: '/product-editor', params: { name: query.trim(), then: 'search' } } as never)}
+          accessibilityRole="button"
+          style={[styles.addProduct, { borderColor: theme.border }]}
+        >
+          <Text style={[type.heading, { color: theme.protein }]}>+</Text>
+          <View style={{ flex: 1 }}>
+            <Text style={[type.bodyStrong, { color: theme.text }]}>
+              {results.length === 0 && mineResults.length === 0 ? 'Not found — add it yourself' : 'Not the right one? Add your own product'}
+            </Text>
+            <Text style={[type.caption, { color: theme.textMuted }]}>Name, barcode and the values from the label</Text>
+          </View>
+        </Pressable>
+      ) : null}
 
       {query.trim().length < 2 ? (
         <>
@@ -298,24 +388,67 @@ export default function FoodSearch() {
             </Section>
           ) : null}
 
-          <Section title="Zuletzt getrackt">
-            {recent.length === 0 ? (
-              <Text style={[type.caption, { color: theme.textFaint, marginTop: space.sm }]}>
+          {/* Recent | Frequent | Self-added, side by side */}
+          <View style={[styles.segment, { backgroundColor: theme.bgSunken, marginTop: space.xl }]}>
+            {TABS.map((t) => (
+              <Pressable
+                key={t.key}
+                onPress={() => setTab(t.key)}
+                accessibilityRole="tab"
+                accessibilityState={{ selected: tab === t.key }}
+                style={[styles.segItem, tab === t.key && { backgroundColor: theme.bgElevated }]}
+              >
+                <Text
+                  style={[type.micro, { color: tab === t.key ? theme.text : theme.textMuted, textAlign: 'center' }]}
+                  numberOfLines={2}
+                >
+                  {t.label}
+                </Text>
+              </Pressable>
+            ))}
+          </View>
+
+          {tab === 'recent' ? (
+            recent.length === 0 ? (
+              <Text style={[type.caption, { color: theme.textFaint, marginTop: space.md }]}>
                 Foods you log from here show up in this list, with the grams you used last time.
               </Text>
             ) : (
-              recent.map((f) => (
-                <TrackedRow key={`r${f.foodId}`} food={f} onPress={() => void handleTracked(f)} />
-              ))
-            )}
-          </Section>
+              recent.map((f) => <TrackedRow key={`r${f.source}${f.foodId}`} food={f} onPress={() => void handleTracked(f)} />)
+            )
+          ) : null}
 
-          {frequent.length > 0 ? (
-            <Section title="Häufig getrackt">
-              {frequent.map((f) => (
-                <TrackedRow key={`f${f.foodId}`} food={f} showCount onPress={() => void handleTracked(f)} />
-              ))}
-            </Section>
+          {tab === 'frequent' ? (
+            frequent.length === 0 ? (
+              <Text style={[type.caption, { color: theme.textFaint, marginTop: space.md }]}>
+                Anything you log at least twice shows up here, most often first.
+              </Text>
+            ) : (
+              frequent.map((f) => <TrackedRow key={`f${f.source}${f.foodId}`} food={f} showCount onPress={() => void handleTracked(f)} />)
+            )
+          ) : null}
+
+          {tab === 'user' ? (
+            <>
+              <Pressable
+                onPress={() => router.push({ pathname: '/product-editor', params: { then: 'search' } } as never)}
+                accessibilityRole="button"
+                style={[styles.addProduct, { borderColor: theme.border }]}
+              >
+                <Text style={[type.heading, { color: theme.protein }]}>+</Text>
+                <View style={{ flex: 1 }}>
+                  <Text style={[type.bodyStrong, { color: theme.text }]}>New product</Text>
+                  <Text style={[type.caption, { color: theme.textMuted }]}>For anything the database does not know</Text>
+                </View>
+              </Pressable>
+              {mine.length === 0 ? (
+                <Text style={[type.caption, { color: theme.textFaint, marginTop: space.md }]}>
+                  Products you add yourself appear here. Give one a barcode and scanning it finds it from then on.
+                </Text>
+              ) : (
+                mine.map((f) => <UserFoodRow key={`m${f.id}`} food={f} onPress={() => handleUserFood(f)} />)
+              )}
+            </>
           ) : null}
         </>
       ) : null}
@@ -357,6 +490,18 @@ export default function FoodSearch() {
           initialSlot={defaultSlot}
           confirmLabel="Add to log"
           onConfirm={confirmDraft}
+          extraAction={
+            draft.userFood && draft.userFood.createdAt > 0
+              ? {
+                  label: 'Edit product',
+                  onPress: () => {
+                    const id = draft.userFood!.id
+                    setDraft(null)
+                    router.push({ pathname: '/product-editor', params: { id: String(id) } } as never)
+                  },
+                }
+              : undefined
+          }
           onClose={() => setDraft(null)}
         />
       ) : null}
@@ -387,6 +532,26 @@ function Section({
   )
 }
 
+function UserFoodRow({ food, onPress }: { food: UserFood; onPress: () => void }) {
+  const theme = useTheme()
+  return (
+    <Pressable
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel={`Log ${food.name}`}
+      style={({ pressed }) => [styles.row, { borderColor: theme.border, minHeight: MIN_TAP_TARGET, opacity: pressed ? 0.6 : 1 }]}
+    >
+      <View style={{ flex: 1 }}>
+        <Text style={[type.body, { color: theme.text }]} numberOfLines={1}>{food.name}</Text>
+        <Text style={[type.caption, { color: theme.textMuted, marginTop: 2 }]} numberOfLines={1}>
+          {Math.round(food.per100.kcal)} kcal / 100 g{food.brand ? ` · ${food.brand}` : ''} · Selbst hinzugefügt
+        </Text>
+      </View>
+      <Text style={[type.heading, { color: theme.textFaint }]}>+</Text>
+    </Pressable>
+  )
+}
+
 function TrackedRow({ food, showCount, onPress }: { food: TrackedFood; showCount?: boolean; onPress: () => void }) {
   const theme = useTheme()
   const kcal = (food.per100.kcal * food.lastGrams) / 100
@@ -409,6 +574,12 @@ function TrackedRow({ food, showCount, onPress }: { food: TrackedFood; showCount
 }
 
 const styles = StyleSheet.create({
+  segment: { flexDirection: 'row', borderRadius: radius.md, padding: 3, gap: 3 },
+  segItem: { flex: 1, minHeight: 40, borderRadius: radius.sm, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 4 },
+  addProduct: {
+    flexDirection: 'row', alignItems: 'center', gap: space.md, marginTop: space.lg,
+    padding: space.md, borderRadius: radius.lg, borderWidth: 1, borderStyle: 'dashed',
+  },
   input: {
     marginTop: space.lg,
     paddingHorizontal: space.lg,
