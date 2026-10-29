@@ -1,30 +1,34 @@
-import { router } from 'expo-router'
+import { router, useLocalSearchParams } from 'expo-router'
 import { useEffect, useMemo, useState } from 'react'
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import type { DbAdapter } from '@nutai/db-adapter'
 import { resolveByText, type ScoredCandidate } from '@nutai/resolver'
 import { nutritionCorpusInfo, openNutritionDb } from '../src/db/expo-adapter'
-import { db } from '../src/data/repo'
-import { resolveSelection } from '../src/data/food-search-select'
-import { logManualFood } from '../src/data/manual-food'
+import { db as userDbHandle } from '../src/data/repo'
+import { portionOptions, resolveSelection, type PortionOption } from '../src/data/food-search-select'
+import { logManualFood, type ManualFoodSelection } from '../src/data/manual-food'
+import { localDate, slotFor } from '../src/data/date-utils'
+import type { Slot } from '../src/data/day-log'
+import { GramEditor } from '../src/components/GramEditor'
 import { useTheme } from '../src/theme/ThemeProvider'
 import { MIN_TAP_TARGET, radius, space, type } from '../src/theme/tokens'
 
 /**
- * What a tap on a candidate row does, end to end: resolve its grams + snapshot
- * from the (read-only) nutrition corpus (`resolveSelection`), then log it to
- * today in the user db (`logManualFood`). Both of those are pure, DB-only
- * functions with their own regression coverage in food-search-select.test.ts;
- * this function additionally reaches for the live app db singleton via
- * `db()`, so — like every other screen in this app — it is only exercised by
- * the running app, not by that test.
+ * What a tap on a candidate row does, end to end: resolve its default grams +
+ * per-100 g snapshot from the (read-only) nutrition corpus (`resolveSelection`),
+ * let the person set the grams and the meal in the GramEditor sheet, then log
+ * it into the chosen day in the user db (`logManualFood`). Both data functions
+ * are pure and covered in food-search-select.test.ts / day-log.test.ts; this
+ * file only wires them to the screen.
  */
-async function selectFood(nutritionDb: DbAdapter, candidate: ScoredCandidate, now: number): Promise<number> {
-  const selection = await resolveSelection(nutritionDb, candidate)
-  const userDb = await db()
-  return logManualFood(userDb, selection, now)
+interface Draft {
+  candidate: ScoredCandidate
+  selection: ManualFoodSelection
+  portions: PortionOption[]
 }
+
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/
 
 /**
  * Foods — the library that replaces the incumbent's `Groups` social feed.
@@ -47,6 +51,13 @@ export default function FoodSearch() {
   const [busy, setBusy] = useState(false)
   const [selectingId, setSelectingId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [draft, setDraft] = useState<Draft | null>(null)
+
+  // Opened from the day list with ?date=YYYY-MM-DD — log into THAT day.
+  const params = useLocalSearchParams<{ date?: string }>()
+  const today = localDate(Date.now())
+  const targetDate = typeof params.date === 'string' && ISO_DATE.test(params.date) ? params.date : today
+  const defaultSlot = slotFor(Date.now()) as Slot
 
   useEffect(() => {
     let alive = true
@@ -93,11 +104,32 @@ export default function FoodSearch() {
     setSelectingId(candidate.foodId)
     setError(null)
     try {
-      await selectFood(db, candidate, Date.now())
+      const [selection, portions] = await Promise.all([
+        resolveSelection(db, candidate),
+        portionOptions(db, Number(candidate.foodId)),
+      ])
+      setDraft({ candidate, selection, portions })
+    } catch {
+      setError('Could not open that food — try again.')
+    } finally {
+      setSelectingId(null)
+    }
+  }
+
+  async function confirmDraft(grams: number, slot: Slot | undefined) {
+    if (!draft) return
+    try {
+      const userDb = await userDbHandle()
+      await logManualFood(userDb, { ...draft.selection, grams }, Date.now(), {
+        date: targetDate,
+        slot: slot ?? defaultSlot,
+        gramsUserSet: true,
+      })
+      setDraft(null)
       router.back()
     } catch {
       setError('Could not log that food — try again.')
-      setSelectingId(null)
+      setDraft(null)
     }
   }
 
@@ -106,7 +138,7 @@ export default function FoodSearch() {
     if (corpus.foods === 0) {
       return 'Corpus missing — the app bundled without nutrition.db. Run `npm run data:build`.'
     }
-    return `${corpus.foods.toLocaleString()} foods · ${corpus.portions.toLocaleString()} portion weights · USDA, CC0`
+    return `${corpus.foods.toLocaleString()} foods · USDA generic foods + Open Food Facts (Austria, ODbL)`
   }, [corpus])
 
   return (
@@ -125,9 +157,13 @@ export default function FoodSearch() {
         {corpusLine}
       </Text>
 
+      {targetDate !== today ? (
+        <Text style={[type.label, { color: theme.protein, marginTop: space.sm }]}>Adding to {targetDate}</Text>
+      ) : null}
+
       <TextInput
         accessibilityLabel="Search foods"
-        placeholder="Search — try “chicken breast”"
+        placeholder="Search — try “Vollmilch” or “Manner”"
         placeholderTextColor={theme.textFaint}
         value={query}
         onChangeText={setQuery}
@@ -169,7 +205,7 @@ export default function FoodSearch() {
           {selectingId === r.foodId ? (
             <ActivityIndicator color={theme.textFaint} />
           ) : (
-            <Text style={[type.micro, { color: theme.textFaint }]}>{r.score.toFixed(2)}</Text>
+            <Text style={[type.heading, { color: theme.textFaint }]}>+</Text>
           )}
         </Pressable>
       ))}
@@ -180,6 +216,26 @@ export default function FoodSearch() {
           and you can save it as your own food so it resolves instantly next time.
         </Text>
       )}
+
+      {draft ? (
+        <GramEditor
+          visible
+          title={draft.candidate.name}
+          subtitle={draft.candidate.brand}
+          per100={{
+            kcal: draft.selection.nutrientSnapshot.kcal,
+            protein_g: draft.selection.nutrientSnapshot.protein_g,
+            carbs_g: draft.selection.nutrientSnapshot.carbs_g,
+            fat_g: draft.selection.nutrientSnapshot.fat_g,
+          }}
+          initialGrams={draft.selection.grams}
+          portions={draft.portions}
+          initialSlot={defaultSlot}
+          confirmLabel="Add to log"
+          onConfirm={confirmDraft}
+          onClose={() => setDraft(null)}
+        />
+      ) : null}
     </ScrollView>
   )
 }
