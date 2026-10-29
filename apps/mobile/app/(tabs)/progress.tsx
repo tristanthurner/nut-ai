@@ -108,7 +108,7 @@ export default function Progress() {
           </Pressable>
         </View>
         <Text style={[styles.big, { color: theme.text }]}>
-          {currentKg != null ? `${(currentKg * LB_PER_KG).toFixed(1)} lbs` : '—'}
+          {currentKg != null ? `${currentKg.toFixed(1)} kg` : '—'}
         </Text>
 
         <View style={[styles.bar, { backgroundColor: theme.ringTrack }]}>
@@ -116,10 +116,10 @@ export default function Progress() {
         </View>
         <View style={styles.spread}>
           <Text style={[type.caption, { color: theme.textMuted }]}>
-            Start: {startKg != null ? `${(startKg * LB_PER_KG).toFixed(1)} lbs` : '—'}
+            Start: {startKg != null ? `${startKg.toFixed(1)} kg` : '—'}
           </Text>
           <Text style={[type.caption, { color: theme.textMuted }]}>
-            Goal: {goalKg != null ? `${(goalKg * LB_PER_KG).toFixed(1)} lbs` : '—'}
+            Goal: {goalKg != null ? `${goalKg.toFixed(1)} kg` : '—'}
           </Text>
         </View>
       </View>
@@ -169,11 +169,11 @@ export default function Progress() {
       <View style={[styles.card, { backgroundColor: theme.bgSunken }]}>
         <Text style={[type.heading, { color: theme.text }]}>Weight changes</Text>
         {CHANGE_WINDOWS.map((d) => (
-          <ChangeRow key={d} label={`${d} day`} lbs={changeOver(trend, d)} />
+          <ChangeRow key={d} label={`${d} day`} kg={changeOver(trend, d)} />
         ))}
-        <ChangeRow label="All time" lbs={changeOver(trend, Number.POSITIVE_INFINITY)} />
+        <ChangeRow label="All time" kg={changeOver(trend, Number.POSITIVE_INFINITY)} />
         <Text style={[type.caption, { color: theme.textFaint, marginTop: space.md, lineHeight: 18 }]}>
-          Measured on the trend line, not raw weigh-ins — a 3 lb overnight swing is water, and
+          Measured on the trend line, not raw weigh-ins — a 1.5 kg overnight swing is water, and
           reporting it as a change would be reporting noise as progress.
         </Text>
       </View>
@@ -181,7 +181,7 @@ export default function Progress() {
       <View style={[styles.card, { backgroundColor: theme.bgSunken }]}>
         <Text style={[type.heading, { color: theme.text }]}>Rate of change</Text>
         <Text style={[styles.big, { color: theme.text }]}>
-          {slope == null ? '—' : `${slope > 0 ? '+' : ''}${slope.toFixed(2)} lb/wk`}
+          {slope == null ? '—' : `${slope > 0 ? '+' : ''}${(slope / LB_PER_KG).toFixed(2)} kg/wk`}
         </Text>
         <Text style={[type.caption, { color: theme.textMuted }]}>
           {slope == null ? 'Not enough weigh-ins yet.' : `From ${raw.length} weigh-ins.`}
@@ -244,18 +244,18 @@ function changeOver(trend: TrendPoint[], days: number): number | null {
   if (!last || !first) return null
   const target = Number.isFinite(days) ? last.day - days : first.day
   const start = [...trend].reverse().find((p) => p.day <= target) ?? first
-  return (last.trendKg - start.trendKg) * LB_PER_KG
+  return last.trendKg - start.trendKg
 }
 
-function ChangeRow({ label, lbs }: { label: string; lbs: number | null }) {
+function ChangeRow({ label, kg }: { label: string; kg: number | null }) {
   const theme = useTheme()
-  const none = lbs == null || Math.abs(lbs) < 0.05
-  const up = (lbs ?? 0) > 0
+  const none = kg == null || Math.abs(kg) < 0.05
+  const up = (kg ?? 0) > 0
   return (
     <View style={styles.changeRow}>
       <Text style={[type.body, { color: theme.textMuted, width: 78 }]}>{label}</Text>
       <Text style={[type.bodyStrong, { color: theme.text, flex: 1 }]}>
-        {lbs == null ? '—' : `${lbs > 0 ? '+' : ''}${lbs.toFixed(1)} lbs`}
+        {kg == null ? '—' : `${kg > 0 ? '+' : ''}${kg.toFixed(1)} kg`}
       </Text>
       <Text style={[type.caption, { color: none ? theme.textMuted : theme.protein }]}>
         {none ? 'No change' : up ? 'Increase' : 'Decrease'}
@@ -293,7 +293,7 @@ function WeightChart({ trend }: { trend: TrendPoint[] }) {
       ))}
       {gridVals.map((v, i) => (
         <SvgText key={`t${i}`} x={2} y={y(v) + 4} fontSize="10" fill={theme.textFaint}>
-          {(v * LB_PER_KG).toFixed(0)}
+          {v.toFixed(0)}
         </SvgText>
       ))}
       {trend.map((p, i) =>

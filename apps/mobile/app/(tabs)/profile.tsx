@@ -10,6 +10,7 @@ import { currentGoal, resetEverything, setting, type CurrentGoal } from '../../s
 import { loadCredential, maskCredential } from '../../src/inference/credentials'
 import { loadPublikWallet, publikConnected } from '../../src/inference/publik'
 import { formatMicros } from '../../src/inference/publik-core'
+import { loadReminderSettings } from '../../src/notifications/reminders'
 import { PROVIDER_NAME } from '../../src/components/CredentialForm'
 import { Icon } from '../../src/components/Icon'
 import { useTheme } from '../../src/theme/ThemeProvider'
@@ -39,18 +40,21 @@ export default function Profile() {
   const [diet, setDiet] = useState('')
   const [providerLabel, setProviderLabel] = useState('—')
   const [dataBusy, setDataBusy] = useState(false)
+  const [remindersLabel, setRemindersLabel] = useState('—')
 
   useFocusEffect(
     useCallback(() => {
       let alive = true
       void (async () => {
-        const [g, avail, d, p] = await Promise.all([
+        const [g, avail, d, p, rem] = await Promise.all([
           currentGoal(),
           availability(),
           setting('diet.style', 'balanced'),
           setting('provider'),
+          loadReminderSettings(),
         ])
         if (!alive) return
+        setRemindersLabel(rem.enabled ? `On · ${rem.times.filter((t) => t.enabled).length} per day` : 'Off')
         setGoal(g)
         setDiet(d)
         setHealthAvail(avail === 'available' ? 'available' : avail === 'not-ios' ? 'not-ios' : 'unavailable')
@@ -191,6 +195,8 @@ export default function Profile() {
           onPress={() => router.push('/edit-goals' as never)}
         />
         <Row label="Log weight" value="" onPress={() => router.push('/log-weight' as never)} />
+        <Row label="Reminders" value={remindersLabel} onPress={() => router.push('/reminders' as never)} />
+        <Row label="Saved meals" value="" onPress={() => router.push('/saved-foods' as never)} />
         <Row label="Diet style" value={diet} />
         <Row
           label="Adaptive target"
@@ -270,7 +276,7 @@ export default function Profile() {
 
       <Section title="About">
         <Row label="License" value="AGPL-3.0" />
-        <Row label="Nutrition data" value="USDA, CC0" />
+        <Row label="Nutrition data" value="USDA (CC0) · Open Food Facts (ODbL)" />
       </Section>
 
       <Text style={[type.caption, { color: theme.textFaint, marginTop: space.xl, lineHeight: 19 }]}>

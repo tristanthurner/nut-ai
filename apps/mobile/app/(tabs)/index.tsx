@@ -31,6 +31,8 @@ import {
 } from '../../src/data/repo'
 import { groupBySlot, type Slot } from '../../src/data/day-log'
 import { GramEditor, SLOT_LABEL } from '../../src/components/GramEditor'
+import { syncReminders } from '../../src/notifications/reminders'
+import { updateWidget } from '../../src/widget/sync'
 import { useTheme } from '../../src/theme/ThemeProvider'
 import { radius, space, type } from '../../src/theme/tokens'
 
@@ -88,6 +90,14 @@ export default function Home() {
         setTotals(t)
         setItems(its)
         setNutrients(n)
+        // Today's log just changed or was opened: drop reminders for meals now
+        // logged, and repaint the home screen widget.
+        void syncReminders()
+        const today = localDate(Date.now())
+        if (g) {
+          if (date === today) updateWidget(today, t, g)
+          else void dayTotals(today).then((tt) => updateWidget(today, tt, g))
+        }
       })()
       return () => {
         alive = false
@@ -230,7 +240,7 @@ export default function Home() {
                 <Icon name="water" size={22} color={theme.protein} />
                 <View>
                   <Text style={[type.caption, { color: theme.textMuted }]}>Water</Text>
-                  <Text style={[type.bodyStrong, { color: theme.text }]}>0 fl oz</Text>
+                  <Text style={[type.bodyStrong, { color: theme.text }]}>0 ml</Text>
                 </View>
               </View>
               <Pressable style={[styles.ghost, { borderColor: theme.border }]}>
@@ -383,6 +393,14 @@ export default function Home() {
             await removeItem(editing.itemId)
             setEditing(null)
             reload()
+          }}
+          extraAction={{
+            label: 'Save meal for later',
+            onPress: () => {
+              const mealId = editing.mealId
+              setEditing(null)
+              router.push({ pathname: '/meal-builder', params: { fromMeal: String(mealId) } } as never)
+            },
           }}
           onClose={() => setEditing(null)}
         />
