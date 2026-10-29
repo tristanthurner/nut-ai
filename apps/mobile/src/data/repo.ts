@@ -16,6 +16,7 @@ import { localDate, slotFor } from './date-utils'
 import * as dayLog from './day-log'
 import * as history from './history'
 import * as saved from './saved-meals'
+import * as userFoods from './user-foods'
 import { clearCredential } from '../inference/credentials'
 import { disconnectPublik } from '../inference/publik'
 import { openUserDb } from '../db/expo-adapter'
@@ -301,6 +302,38 @@ export async function logSavedMeal(id: number, opts: { date?: string; slot?: str
 export async function savedItemsFromLoggedMeal(mealId: number): Promise<saved.SavedMealItem[]> {
   return saved.savedItemsFromLoggedMeal(await db(), mealId)
 }
+export type { UserFood, UserFoodInput } from './user-foods'
+export { UserFoodError } from './user-foods'
+
+export async function listUserFoods(): Promise<userFoods.UserFood[]> {
+  return userFoods.listUserFoods(await db())
+}
+export async function getUserFood(id: number): Promise<userFoods.UserFood | null> {
+  return userFoods.getUserFood(await db(), id)
+}
+export async function createUserFood(input: userFoods.UserFoodInput): Promise<number> {
+  return userFoods.createUserFood(await db(), input, Date.now())
+}
+export async function updateUserFood(id: number, input: userFoods.UserFoodInput): Promise<void> {
+  return userFoods.updateUserFood(await db(), id, input)
+}
+export async function deleteUserFood(id: number): Promise<void> {
+  return userFoods.deleteUserFood(await db(), id)
+}
+export async function findUserFoodByBarcode(raw: string): Promise<userFoods.UserFood | null> {
+  return userFoods.findUserFoodByBarcode(await db(), raw)
+}
+export async function searchUserFoods(query: string, limit?: number): Promise<userFoods.UserFood[]> {
+  return userFoods.searchUserFoods(await db(), query, limit)
+}
+export async function logUserFood(
+  food: userFoods.UserFood,
+  grams: number,
+  opts: { date?: string; slot?: string },
+): Promise<number> {
+  return userFoods.logUserFood(await db(), food, grams, Date.now(), opts)
+}
+
 export async function recentFoods(limit?: number): Promise<history.TrackedFood[]> {
   return history.recentFoods(await db(), limit)
 }
@@ -356,7 +389,9 @@ export async function logMeal(
 
     let sort = 0
     for (const row of result.meal.ingredients) {
-      const foodId = row.sourceFoodId == null ? null : Number(row.sourceFoodId)
+      // 'user:<id>' marks a self-added product (user_foods); a bare number is a corpus row.
+      const isUser = typeof row.sourceFoodId === 'string' && row.sourceFoodId.startsWith('user:')
+      const foodId = row.sourceFoodId == null ? null : Number(isUser ? row.sourceFoodId.slice(5) : row.sourceFoodId)
       await tx.run(
         `INSERT INTO log_items (meal_id, matched_food_id, matched_food_source, raw_model_label,
                                 display_name, grams, gram_pathway, portion_source,
@@ -368,7 +403,7 @@ export async function logMeal(
         [
           mealId,
           Number.isFinite(foodId as number) ? foodId : null,
-          row.origin === 'web_lookup' ? 'web' : row.sourceFoodId != null ? 'corpus' : 'estimate',
+          row.origin === 'web_lookup' ? 'web' : isUser ? 'user' : row.sourceFoodId != null ? 'corpus' : 'estimate',
           row.sourceUrl ?? null,
           row.displayName,
           row.grams,

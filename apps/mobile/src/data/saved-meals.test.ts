@@ -143,3 +143,18 @@ describe('recently and frequently tracked', () => {
     expect((await recentFoods(h)).map((f) => f.name)).toEqual(['Apfel'])
   })
 })
+
+describe('saved meals with self-added products', () => {
+  it('keeps the user source through save, log and re-save', async () => {
+    const { createUserFood, getUserFood } = await import('./user-foods')
+    const uid = await createUserFood(h, { name: 'Mein Müsli', kcal: 400, protein_g: 10, carbs_g: 60, fat_g: 12 }, NOW)
+    const f = (await getUserFood(h, uid))!
+    const id = await createSavedMeal(h, 'Frühstück', [{ foodId: uid, source: 'user', name: f.name, grams: 70, per100: f.per100 }, milk], NOW)
+    const mealId = await logSavedMeal(h, id, NOW, { date: DAY })
+    const src = await h.all<{ matched_food_source: string }>('SELECT matched_food_source FROM log_items WHERE meal_id = ? ORDER BY sort_order', [mealId])
+    expect(src.map((r) => r.matched_food_source)).toEqual(['user', 'corpus'])
+    const again = await savedItemsFromLoggedMeal(h, mealId)
+    expect(again[0]).toMatchObject({ foodId: uid, source: 'user', grams: 70 })
+    expect(again[1]!.source).toBeUndefined()
+  })
+})

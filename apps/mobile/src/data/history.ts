@@ -8,10 +8,12 @@ import type { Per100Full } from './saved-meals'
  * values offered are exactly the ones they logged last time, and the grams
  * default to what they actually ate last time rather than a generic portion.
  *
- * Only Food Database / saved-meal items that point at a corpus row are
- * included: an AI estimate has no stable identity to group repeats by.
+ * Only items with a stable identity are included — a corpus row or a
+ * self-added product. An AI estimate has nothing to group repeats by.
  */
 export interface TrackedFood {
+  /** Where `foodId` points: the bundled corpus or the user's own products. */
+  source: 'corpus' | 'user'
   foodId: number
   name: string
   lastGrams: number
@@ -21,6 +23,7 @@ export interface TrackedFood {
 }
 
 interface Row {
+  src: string
   fid: number
   name: string
   grams: number
@@ -36,15 +39,16 @@ interface Row {
 }
 
 const LATEST_PER_FOOD = `
-SELECT fid, name, grams, logged_at, cnt, kcal, p, f, c, fiber, sugar, sodium FROM (
-  SELECT li.matched_food_id AS fid, li.display_name AS name, li.grams, li.logged_at,
+SELECT src, fid, name, grams, logged_at, cnt, kcal, p, f, c, fiber, sugar, sodium FROM (
+  SELECT li.matched_food_source AS src, li.matched_food_id AS fid, li.display_name AS name, li.grams, li.logged_at,
          li.snap_energy_kcal AS kcal, li.snap_protein_g AS p, li.snap_fat_g AS f, li.snap_carb_g AS c,
          li.snap_fiber_g AS fiber, li.snap_sugar_g AS sugar, li.snap_sodium_mg AS sodium,
-         ROW_NUMBER() OVER (PARTITION BY li.matched_food_id ORDER BY li.logged_at DESC, li.id DESC) AS rn,
-         COUNT(*) OVER (PARTITION BY li.matched_food_id) AS cnt
+         ROW_NUMBER() OVER (PARTITION BY li.matched_food_source, li.matched_food_id
+                            ORDER BY li.logged_at DESC, li.id DESC) AS rn,
+         COUNT(*) OVER (PARTITION BY li.matched_food_source, li.matched_food_id) AS cnt
   FROM log_items li
   JOIN meals m ON m.id = li.meal_id
-  WHERE li.matched_food_source = 'corpus'
+  WHERE li.matched_food_source IN ('corpus','user')
     AND li.matched_food_id IS NOT NULL
     AND li.snap_energy_kcal IS NOT NULL
     AND li.grams > 0
@@ -55,6 +59,7 @@ WHERE rn = 1
 
 function toTracked(r: Row): TrackedFood {
   return {
+    source: r.src === 'user' ? 'user' : 'corpus',
     foodId: r.fid,
     name: r.name,
     lastGrams: r.grams,

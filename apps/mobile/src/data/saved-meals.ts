@@ -24,8 +24,10 @@ export interface Per100Full {
 }
 
 export interface SavedMealItem {
-  /** Corpus row id when the item came from the Food Database; null for anything else. */
+  /** Row id in the corpus (or in user_foods when `source` is 'user'); null for anything else. */
   foodId: number | null
+  /** Which table `foodId` points into. Absent = corpus (meals saved before self-added products). */
+  source?: 'corpus' | 'user'
   name: string
   grams: number
   per100: Per100Full
@@ -70,6 +72,7 @@ export function parseItems(json: string): SavedMealItem[] {
     if (typeof o.name !== 'string' || grams == null || grams <= 0 || kcal == null) continue
     out.push({
       foodId: num(o.foodId),
+      ...(o.source === 'user' ? { source: 'user' as const } : {}),
       name: o.name,
       grams,
       per100: {
@@ -181,7 +184,7 @@ export async function logSavedMeal(
         [
           mealId,
           it.foodId,
-          it.foodId != null ? 'corpus' : 'saved',
+          it.foodId == null ? 'saved' : it.source === 'user' ? 'user' : 'corpus',
           it.name,
           Math.round(it.grams * scale * 10) / 10,
           it.per100.kcal,
@@ -230,7 +233,8 @@ export async function savedItemsFromLoggedMeal(h: DbAdapter, mealId: number): Pr
   return rows
     .filter((r) => r.snap_energy_kcal != null && r.grams > 0)
     .map((r) => ({
-      foodId: r.matched_food_source === 'corpus' ? r.matched_food_id : null,
+      foodId: r.matched_food_source === 'corpus' || r.matched_food_source === 'user' ? r.matched_food_id : null,
+      ...(r.matched_food_source === 'user' ? { source: 'user' as const } : {}),
       name: r.display_name,
       // "Ate half the plate" becomes half the grams: a saved meal has no
       // separate eaten fraction, so it is folded in here.
