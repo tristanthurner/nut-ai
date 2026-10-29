@@ -20,6 +20,9 @@
  * Env:
  *   OFF_CSV      path to an already-downloaded .csv.gz (skips the download)
  *   OFF_COUNTRY  countries_tags value to keep (default en:austria)
+ *   OFF_EXTRA_BRANDS  regex of brands kept WHEREVER they are tagged as sold
+ *                (default: Recheis and S-Budget, whose packs are often
+ *                tagged only Germany, or not tagged with a country at all)
  *   OUT          nutrition.db path (default apps/mobile/assets/nutrition.db)
  */
 
@@ -40,6 +43,13 @@ const OUT = process.env.OUT ?? join(REPO, 'apps/mobile/assets/nutrition.db')
 const COUNTRY = process.env.OFF_COUNTRY ?? 'en:austria'
 const OFF_URL = 'https://static.openfoodfacts.org/data/en.openfoodfacts.org.products.csv.gz'
 const OFF_DIR = process.env.OFF_DIR ?? '/tmp/off'
+
+/** Brands wanted in full regardless of the country tag. Matched on brands + brands_tags. */
+const EXTRA_BRANDS = new RegExp(process.env.OFF_EXTRA_BRANDS ?? '\\brecheis\\b|\\bs[\\s_-]?budget\\b', 'i')
+const EXTRA_LABELS = [
+  ['Recheis', /\brecheis\b/i],
+  ['S-Budget', /\bs[\s_-]?budget\b/i],
+]
 
 /** Columns this build cannot work without. Checked against the real header. */
 const REQUIRED = [
@@ -170,6 +180,9 @@ async function readProducts(csvPath) {
   let lines = 0
   const products = []
   const seenBarcodes = new Set()
+  // Coverage report for the brands asked for by name: how many rows exist,
+  // how many were dropped for missing/implausible nutrition, how many kept.
+  const brandStats = Object.fromEntries(EXTRA_LABELS.map(([label]) => [label, { rows: 0, noNutrition: 0, duplicate: 0, kept: 0 }]))
 
   for await (const line of rl) {
     if (!col) {
@@ -189,10 +202,14 @@ async function readProducts(csvPath) {
     if (lines % 500000 === 0) console.log(`  …${lines.toLocaleString('en')} rows scanned, ${products.length} kept`)
 
     // Cheap substring prefilter before splitting a 200-column line.
-    if (!line.includes(COUNTRY)) continue
+    const maybeCountry = line.includes(COUNTRY)
+    if (!maybeCountry && !EXTRA_BRANDS.test(line)) continue
     const row = line.split('\t')
     const countries = (row[col.countries_tags] ?? '').split(',')
-    if (!countries.includes(COUNTRY)) continue
+    const brandText = `${row[col.brands] ?? ''},${col.brands_tags != null ? row[col.brands_tags] ?? '' : ''}`
+    const extraBrand = EXTRA_LABELS.find(([, re]) => re.test(brandText))?.[0] ?? null
+    if (!countries.includes(COUNTRY) && !extraBrand) continue
+    if (extraBrand) brandStats[extraBrand].rows++
 
     const name = clean(row[col.product_name]) ||
       clean(col.abbreviated_product_name != null ? row[col.abbreviated_product_name] : '') ||
@@ -223,21 +240,40 @@ async function readProducts(csvPath) {
 
     if (f.servingG != null && (f.servingG <= 0 || f.servingG > 2000)) f.servingG = null
 
-    if (!plausible(f)) continue
+    if (!plausible(f)) {
+      if (extraBrand) brandStats[extraBrand].noNutrition++
+      continue
+    }
 
     f.barcode = normalizeGtin(f.code)
     // One row per product: by canonical GTIN, or by the raw code when it is
     // not a valid GTIN (store-internal codes) — never by name.
     const key = f.barcode ?? (f.code ? `raw:${f.code}` : null)
     if (key) {
-      if (seenBarcodes.has(key)) continue
+      if (seenBarcodes.has(key)) {
+        if (extraBrand) brandStats[extraBrand].duplicate++
+        continue
+      }
       seenBarcodes.add(key)
+    }
+    if (extraBrand) {
+      brandStats[extraBrand].kept++
+      // Brand names on OFF are free text ("recheis", "Recheis Teigwaren");
+      // the shelf name is what people search for.
+      f.brand = extraBrand
     }
     products.push(f)
   }
 
   if (!col) throw new Error('Open Food Facts export was empty')
-  console.log(`  scanned ${lines.toLocaleString('en')} rows, kept ${products.length} for ${COUNTRY}`)
+  console.log(`  scanned ${lines.toLocaleString('en')} rows, kept ${products.length} for ${COUNTRY} + named brands`)
+  for (const [label, st] of Object.entries(brandStats)) {
+    console.log(
+      `  ${label}: ${st.rows} products in Open Food Facts → ${st.kept} added` +
+        (st.noNutrition ? `, ${st.noNutrition} skipped (no or implausible nutrition values)` : '') +
+        (st.duplicate ? `, ${st.duplicate} duplicate barcodes` : ''),
+    )
+  }
   return products
 }
 
