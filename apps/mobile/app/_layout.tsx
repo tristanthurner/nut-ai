@@ -2,9 +2,12 @@ import { Stack, router, useRootNavigationState, useSegments } from 'expo-router'
 import { StatusBar } from 'expo-status-bar'
 import Storage from 'expo-sqlite/kv-store'
 import { useEffect, useState } from 'react'
+import { AppState } from 'react-native'
+import * as Notifications from 'expo-notifications'
 import { GestureHandlerRootView } from 'react-native-gesture-handler'
 import { SafeAreaProvider } from 'react-native-safe-area-context'
 import { ThemeProvider, useTheme } from '../src/theme/ThemeProvider'
+import { installNotificationHandler, syncReminders } from '../src/notifications/reminders'
 
 import { ONBOARDING_DONE_KEY } from '../src/onboarding/done-key'
 export { ONBOARDING_DONE_KEY }
@@ -41,9 +44,37 @@ function useOnboardingGate() {
   }, [navState?.key, segments, checked])
 }
 
+/**
+ * Reminders: re-plan whenever the app comes to the foreground (a new day, or
+ * meals logged elsewhere), and open the Food Database when one is tapped.
+ */
+function useReminders() {
+  const navState = useRootNavigationState()
+  const lastResponse = Notifications.useLastNotificationResponse()
+
+  useEffect(() => {
+    installNotificationHandler()
+    void syncReminders()
+    const sub = AppState.addEventListener('change', (st) => {
+      if (st === 'active') void syncReminders()
+    })
+    return () => sub.remove()
+  }, [])
+
+  useEffect(() => {
+    if (!navState?.key || !lastResponse) return
+    const data = lastResponse.notification.request.content.data as { route?: string } | undefined
+    if (data?.route === '/food-search') {
+      router.push('/food-search' as never)
+      void Notifications.clearLastNotificationResponseAsync()
+    }
+  }, [navState?.key, lastResponse])
+}
+
 function Root() {
   const theme = useTheme()
   useOnboardingGate()
+  useReminders()
 
   return (
     <>
@@ -59,6 +90,8 @@ function Root() {
         <Stack.Screen name="log-exercise" options={{ presentation: 'modal' }} />
         <Stack.Screen name="food-search" options={{ presentation: 'modal' }} />
         <Stack.Screen name="saved-foods" options={{ presentation: 'modal' }} />
+        <Stack.Screen name="meal-builder" options={{ presentation: 'modal' }} />
+        <Stack.Screen name="reminders" options={{ presentation: 'modal' }} />
         <Stack.Screen name="edit-goals" options={{ presentation: 'modal' }} />
       </Stack>
     </>

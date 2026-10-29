@@ -1,11 +1,21 @@
-import { router, useLocalSearchParams } from 'expo-router'
-import { useEffect, useMemo, useState } from 'react'
+import { router, useFocusEffect, useLocalSearchParams } from 'expo-router'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import type { DbAdapter } from '@nutai/db-adapter'
 import { resolveByText, type ScoredCandidate } from '@nutai/resolver'
 import { nutritionCorpusInfo, openNutritionDb } from '../src/db/expo-adapter'
-import { db as userDbHandle } from '../src/data/repo'
+import {
+  db as userDbHandle,
+  frequentFoods,
+  logSavedMeal,
+  mealTotals,
+  recentFoods,
+  savedMeals,
+  type SavedMeal,
+  type TrackedFood,
+} from '../src/data/repo'
+import { MealLogSheet } from '../src/components/MealLogSheet'
 import { portionOptions, resolveSelection, type PortionOption } from '../src/data/food-search-select'
 import { logManualFood, type ManualFoodSelection } from '../src/data/manual-food'
 import { localDate, slotFor } from '../src/data/date-utils'
@@ -23,7 +33,8 @@ import { MIN_TAP_TARGET, radius, space, type } from '../src/theme/tokens'
  * file only wires them to the screen.
  */
 interface Draft {
-  candidate: ScoredCandidate
+  title: string
+  subtitle: string | null
   selection: ManualFoodSelection
   portions: PortionOption[]
 }
@@ -52,6 +63,25 @@ export default function FoodSearch() {
   const [selectingId, setSelectingId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [draft, setDraft] = useState<Draft | null>(null)
+  const [recent, setRecent] = useState<TrackedFood[]>([])
+  const [frequent, setFrequent] = useState<TrackedFood[]>([])
+  const [meals, setMeals] = useState<SavedMeal[]>([])
+  const [logMeal, setLogMeal] = useState<SavedMeal | null>(null)
+
+  // Refresh on focus: coming back from the meal builder must show the new meal.
+  useFocusEffect(
+    useCallback(() => {
+      let alive = true
+      void (async () => {
+        const [r, f, m] = await Promise.all([recentFoods(8), frequentFoods(8), savedMeals()])
+        if (!alive) return
+        setRecent(r)
+        setFrequent(f)
+        setMeals(m)
+      })()
+      return () => { alive = false }
+    }, []),
+  )
 
   // Opened from the day list with ?date=YYYY-MM-DD — log into THAT day.
   const params = useLocalSearchParams<{ date?: string }>()
@@ -108,12 +138,36 @@ export default function FoodSearch() {
         resolveSelection(db, candidate),
         portionOptions(db, Number(candidate.foodId)),
       ])
-      setDraft({ candidate, selection, portions })
+      setDraft({ title: candidate.name, subtitle: candidate.brand, selection, portions })
     } catch {
       setError('Could not open that food — try again.')
     } finally {
       setSelectingId(null)
     }
+  }
+
+  async function handleTracked(f: TrackedFood) {
+    setError(null)
+    const portions = db ? await portionOptions(db, f.foodId) : []
+    setDraft({
+      title: f.name,
+      subtitle: f.count > 1 ? `Logged ${f.count}× · last time ${Math.round(f.lastGrams)} g` : `Last time ${Math.round(f.lastGrams)} g`,
+      portions,
+      selection: {
+        foodId: f.foodId,
+        displayName: f.name,
+        grams: f.lastGrams,
+        nutrientSnapshot: {
+          kcal: f.per100.kcal,
+          protein_g: f.per100.protein_g,
+          fat_g: f.per100.fat_g,
+          carbs_g: f.per100.carbs_g,
+          fiber_g: f.per100.fiber_g,
+          sugar_g: f.per100.sugar_g,
+          sodium_mg: f.per100.sodium_mg,
+        },
+      },
+    })
   }
 
   async function confirmDraft(grams: number, slot: Slot | undefined) {
@@ -217,11 +271,81 @@ export default function FoodSearch() {
         </Text>
       )}
 
+      {query.trim().length < 2 ? (
+        <>
+          {meals.length > 0 ? (
+            <Section title="Saved meals" action={{ label: '+ New', onPress: () => router.push('/meal-builder' as never) }}>
+              {meals.slice(0, 5).map((m) => {
+                const t = mealTotals(m.items)
+                return (
+                  <Pressable
+                    key={`m${m.id}`}
+                    onPress={() => setLogMeal(m)}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Log ${m.name}`}
+                    style={({ pressed }) => [styles.row, { borderColor: theme.border, minHeight: MIN_TAP_TARGET, opacity: pressed ? 0.6 : 1 }]}
+                  >
+                    <View style={{ flex: 1 }}>
+                      <Text style={[type.body, { color: theme.text }]} numberOfLines={1}>{m.name}</Text>
+                      <Text style={[type.caption, { color: theme.textMuted, marginTop: 2 }]}>
+                        {m.items.length} {m.items.length === 1 ? 'item' : 'items'} · {Math.round(t.kcal)} kcal
+                      </Text>
+                    </View>
+                    <Text style={[type.heading, { color: theme.textFaint }]}>+</Text>
+                  </Pressable>
+                )
+              })}
+            </Section>
+          ) : null}
+
+          <Section title="Zuletzt getrackt">
+            {recent.length === 0 ? (
+              <Text style={[type.caption, { color: theme.textFaint, marginTop: space.sm }]}>
+                Foods you log from here show up in this list, with the grams you used last time.
+              </Text>
+            ) : (
+              recent.map((f) => (
+                <TrackedRow key={`r${f.foodId}`} food={f} onPress={() => void handleTracked(f)} />
+              ))
+            )}
+          </Section>
+
+          {frequent.length > 0 ? (
+            <Section title="Häufig getrackt">
+              {frequent.map((f) => (
+                <TrackedRow key={`f${f.foodId}`} food={f} showCount onPress={() => void handleTracked(f)} />
+              ))}
+            </Section>
+          ) : null}
+        </>
+      ) : null}
+
+      <MealLogSheet
+        meal={logMeal}
+        initialSlot={defaultSlot}
+        onEdit={
+          logMeal
+            ? () => {
+                const id = logMeal.id
+                setLogMeal(null)
+                router.push({ pathname: '/meal-builder', params: { id: String(id) } } as never)
+              }
+            : undefined
+        }
+        onLog={async (scale, slot) => {
+          if (!logMeal) return
+          await logSavedMeal(logMeal.id, { date: targetDate, slot, scale })
+          setLogMeal(null)
+          router.back()
+        }}
+        onClose={() => setLogMeal(null)}
+      />
+
       {draft ? (
         <GramEditor
           visible
-          title={draft.candidate.name}
-          subtitle={draft.candidate.brand}
+          title={draft.title}
+          subtitle={draft.subtitle}
           per100={{
             kcal: draft.selection.nutrientSnapshot.kcal,
             protein_g: draft.selection.nutrientSnapshot.protein_g,
@@ -237,6 +361,50 @@ export default function FoodSearch() {
         />
       ) : null}
     </ScrollView>
+  )
+}
+
+function Section({
+  title, action, children,
+}: {
+  title: string
+  action?: { label: string; onPress: () => void }
+  children: React.ReactNode
+}) {
+  const theme = useTheme()
+  return (
+    <View style={{ marginTop: space.xl }}>
+      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+        <Text style={[type.label, { color: theme.textMuted }]}>{title}</Text>
+        {action ? (
+          <Pressable onPress={action.onPress} hitSlop={space.md} accessibilityRole="button">
+            <Text style={[type.label, { color: theme.protein }]}>{action.label}</Text>
+          </Pressable>
+        ) : null}
+      </View>
+      {children}
+    </View>
+  )
+}
+
+function TrackedRow({ food, showCount, onPress }: { food: TrackedFood; showCount?: boolean; onPress: () => void }) {
+  const theme = useTheme()
+  const kcal = (food.per100.kcal * food.lastGrams) / 100
+  return (
+    <Pressable
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel={`Log ${food.name}`}
+      style={({ pressed }) => [styles.row, { borderColor: theme.border, minHeight: MIN_TAP_TARGET, opacity: pressed ? 0.6 : 1 }]}
+    >
+      <View style={{ flex: 1 }}>
+        <Text style={[type.body, { color: theme.text }]} numberOfLines={1}>{food.name}</Text>
+        <Text style={[type.caption, { color: theme.textMuted, marginTop: 2 }]}>
+          {Math.round(food.lastGrams)} g · {Math.round(kcal)} kcal{showCount ? ` · ${food.count}×` : ''}
+        </Text>
+      </View>
+      <Text style={[type.heading, { color: theme.textFaint }]}>+</Text>
+    </Pressable>
   )
 }
 
