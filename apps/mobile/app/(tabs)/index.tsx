@@ -15,13 +15,22 @@ import Svg, { Circle } from 'react-native-svg'
 import { Icon, type IconName } from '../../src/components/Icon'
 import {
   currentGoal,
+  dayItems,
+  dayNutrients,
   dayTotals,
   localDate,
+  removeItem,
   runAdaptive,
+  setItemGrams,
+  setMealSlot,
   type AdaptiveOutcome,
   type CurrentGoal,
+  type DayItem,
+  type DayNutrients,
   type DayTotals,
 } from '../../src/data/repo'
+import { groupBySlot, type Slot } from '../../src/data/day-log'
+import { GramEditor, SLOT_LABEL } from '../../src/components/GramEditor'
 import { useTheme } from '../../src/theme/ThemeProvider'
 import { radius, space, type } from '../../src/theme/tokens'
 
@@ -51,8 +60,13 @@ export default function Home() {
   const [adaptive, setAdaptive] = useState<AdaptiveOutcome | null>(null)
   const [offset, setOffset] = useState(0)
   const [page, setPage] = useState(0)
+  const [items, setItems] = useState<DayItem[]>([])
+  const [nutrients, setNutrients] = useState<DayNutrients | null>(null)
+  const [editing, setEditing] = useState<DayItem | null>(null)
+  const [reloadKey, setReloadKey] = useState(0)
 
   const selected = useMemo(() => Date.now() + offset * 86_400_000, [offset])
+  const selectedDate = localDate(selected)
 
   useFocusEffect(
     useCallback(() => {
@@ -61,17 +75,29 @@ export default function Home() {
         // The adaptive loop runs BEFORE reading the goal, so a target it just
         // changed is the one rendered. Its own gates decide whether it may act.
         const outcome = await runAdaptive(Date.now())
-        const [g, t] = await Promise.all([currentGoal(), dayTotals(localDate(selected))])
+        const date = localDate(selected)
+        const [g, t, its, n] = await Promise.all([
+          currentGoal(),
+          dayTotals(date),
+          dayItems(date),
+          dayNutrients(date),
+        ])
         if (!alive) return
         setAdaptive(outcome)
         setGoal(g)
         setTotals(t)
+        setItems(its)
+        setNutrients(n)
       })()
       return () => {
         alive = false
       }
-    }, [selected]),
+    }, [selected, reloadKey]),
   )
+
+  const reload = () => setReloadKey((k) => k + 1)
+  const groups = useMemo(() => groupBySlot(items), [items])
+  const editingIsWholeMeal = editing != null && items.filter((i) => i.mealId === editing.mealId).length === 1
 
   if (!goal || !totals) {
     return (
@@ -144,9 +170,9 @@ export default function Home() {
         {/* Page 2 — micros and the health score */}
         <View style={{ width, paddingHorizontal: space.lg }}>
           <View style={styles.macroRow}>
-            <MacroCard label="Fiber" icon="fiber" eaten={0} target={30} color="#8B7BD8" unit="g" />
-            <MacroCard label="Sugar" icon="sugar" eaten={0} target={50} color="#E88BA8" unit="g" />
-            <MacroCard label="Sodium" icon="sodium" eaten={0} target={2300} color="#D6A648" unit="mg" />
+            <MacroCard label="Fiber" icon="fiber" eaten={nutrients?.fiber_g ?? 0} target={30} color="#8B7BD8" unit="g" />
+            <MacroCard label="Sugar" icon="sugar" eaten={nutrients?.sugar_g ?? 0} target={50} color="#E88BA8" unit="g" />
+            <MacroCard label="Sodium" icon="sodium" eaten={nutrients?.sodium_mg ?? 0} target={2300} color="#D6A648" unit="mg" />
           </View>
 
           <View style={[styles.card, { backgroundColor: theme.bgElevated, borderColor: theme.border }]}>
@@ -250,9 +276,33 @@ export default function Home() {
         </View>
       </View>
 
-      {/* Recently uploaded */}
+      {/* Food log — everything eaten on the selected day, item by item */}
       <View style={{ paddingHorizontal: space.lg, marginTop: space.xl }}>
-        <Text style={[type.title, { color: theme.text, fontSize: 24 }]}>Recently uploaded</Text>
+        <View style={styles.spread}>
+          <Text style={[type.title, { color: theme.text, fontSize: 24 }]}>{dayTitle(offset, selected)}</Text>
+          <Pressable
+            onPress={() => router.push({ pathname: '/food-search', params: { date: selectedDate } } as never)}
+            accessibilityRole="button"
+            accessibilityLabel="Add food to this day"
+            style={[styles.addPill, { backgroundColor: theme.text }]}
+          >
+            <Icon name="plus" size={16} color={theme.bg} />
+            <Text style={[type.label, { color: theme.bg }]}>Add food</Text>
+          </Pressable>
+        </View>
+
+        {!empty ? (
+          <Text style={[type.caption, { color: theme.textMuted, marginTop: space.xs }]}>
+            {Math.round(totals.kcal)} kcal · P {Math.round(totals.protein_g)} g · C {Math.round(totals.carbs_g)} g · F{' '}
+            {Math.round(totals.fat_g)} g
+          </Text>
+        ) : null}
+
+        {totals.pendingCount > 0 ? (
+          <Text style={[type.caption, { color: theme.uncertain, marginTop: space.xs }]}>
+            +{totals.pendingCount} still analyzing — not counted yet
+          </Text>
+        ) : null}
 
         {empty ? (
           <View style={[styles.emptyCard, { backgroundColor: theme.bgSunken }]}>
@@ -264,24 +314,92 @@ export default function Home() {
               </View>
             </View>
             <Text style={[type.body, { color: theme.textMuted, textAlign: 'center', marginTop: space.lg }]}>
-              Tap + to add your first meal of the day
+              Nothing logged {offset === 0 ? 'today' : 'on this day'} yet
             </Text>
           </View>
         ) : (
-          <View style={[styles.card, { backgroundColor: theme.bgSunken, borderColor: 'transparent' }]}>
-            <Text style={[type.bodyStrong, { color: theme.text }]}>
-              {totals.mealCount} {totals.mealCount === 1 ? 'meal' : 'meals'} logged
-            </Text>
-            {totals.pendingCount > 0 ? (
-              <Text style={[type.caption, { color: theme.uncertain, marginTop: space.xs }]}>
-                +{totals.pendingCount} still analyzing — not counted yet
+          groups.map((g) => (
+            <View
+              key={g.slot}
+              style={[styles.slotCard, { backgroundColor: theme.bgElevated, borderColor: theme.border }]}
+            >
+              <View style={styles.spread}>
+                <Text style={[type.bodyStrong, { color: theme.text }]}>{SLOT_LABEL[g.slot]}</Text>
+                <Text style={[type.bodyStrong, { color: theme.text }]}>{Math.round(g.kcal)} kcal</Text>
+              </View>
+              <Text style={[type.micro, { color: theme.textFaint, marginTop: 2 }]}>
+                P {Math.round(g.protein_g)} g · C {Math.round(g.carbs_g)} g · F {Math.round(g.fat_g)} g
               </Text>
-            ) : null}
-          </View>
+
+              {g.items.map((it) => (
+                <Pressable
+                  key={it.itemId}
+                  onPress={() => setEditing(it)}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Edit ${it.name}, ${Math.round(it.grams)} grams`}
+                  style={({ pressed }) => [
+                    styles.itemRow,
+                    {
+                      borderTopColor: theme.border,
+                      borderTopWidth: StyleSheet.hairlineWidth,
+                      opacity: pressed ? 0.6 : 1,
+                    },
+                  ]}
+                >
+                  <View style={{ flex: 1 }}>
+                    <Text style={[type.body, { color: theme.text }]} numberOfLines={1}>{it.name}</Text>
+                    <Text style={[type.caption, { color: theme.textMuted, marginTop: 1 }]} numberOfLines={1}>
+                      {fmtGrams(it.grams)} · P {Math.round(it.protein_g)} · C {Math.round(it.carbs_g)} · F{' '}
+                      {Math.round(it.fat_g)}
+                      {it.isEstimate ? ' · estimate' : ''}
+                    </Text>
+                  </View>
+                  <Text style={[type.bodyStrong, { color: theme.text }]}>{Math.round(it.kcal)}</Text>
+                  <Icon name="pencil" size={14} color={theme.textFaint} />
+                </Pressable>
+              ))}
+            </View>
+          ))
         )}
       </View>
+
+      {editing ? (
+        <GramEditor
+          visible
+          title={editing.name}
+          subtitle={editing.isEstimate ? 'AI estimate' : null}
+          per100={editing.per100}
+          initialGrams={editing.grams}
+          initialSlot={editingIsWholeMeal ? editing.slot : undefined}
+          eatenFraction={editing.eatenFraction}
+          confirmLabel="Save"
+          onConfirm={async (grams: number, slot: Slot | undefined) => {
+            await setItemGrams(editing.itemId, grams)
+            if (slot && slot !== editing.slot) await setMealSlot(editing.mealId, slot)
+            setEditing(null)
+            reload()
+          }}
+          onDelete={async () => {
+            await removeItem(editing.itemId)
+            setEditing(null)
+            reload()
+          }}
+          onClose={() => setEditing(null)}
+        />
+      ) : null}
     </ScrollView>
   )
+}
+
+function dayTitle(offset: number, ms: number): string {
+  if (offset === 0) return 'Today'
+  if (offset === -1) return 'Yesterday'
+  const d = new Date(ms)
+  return `${DAY_LABELS[d.getDay()]} ${d.getDate()}.${d.getMonth() + 1}.`
+}
+
+function fmtGrams(g: number): string {
+  return `${Number.isInteger(g) ? g : Math.round(g * 10) / 10} g`
 }
 
 function DayStrip({ selected, onSelect }: { selected: number; onSelect: (o: number) => void }) {
@@ -473,4 +591,16 @@ const styles = StyleSheet.create({
     padding: space.lg, borderRadius: radius.lg,
   },
   skeleton: { height: 8, borderRadius: 4 },
+  addPill: {
+    flexDirection: 'row', alignItems: 'center', gap: space.xs,
+    paddingHorizontal: space.md, paddingVertical: space.sm, borderRadius: radius.pill,
+  },
+  slotCard: {
+    marginTop: space.md, paddingHorizontal: space.lg, paddingTop: space.md, paddingBottom: space.xs,
+    borderRadius: radius.xl, borderWidth: StyleSheet.hairlineWidth,
+  },
+  itemRow: {
+    flexDirection: 'row', alignItems: 'center', gap: space.sm,
+    paddingVertical: space.md, marginTop: space.sm,
+  },
 })
